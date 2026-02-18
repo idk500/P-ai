@@ -498,16 +498,113 @@ async fn builtin_fetch(url: &str, max_length: usize) -> Result<Value, String> {
 }
 
 async fn builtin_bing_search(query: &str, num_results: usize) -> Result<Value, String> {
+    fn decode_b64_relaxed(input: &str) -> Option<String> {
+        let mut candidates = Vec::new();
+        candidates.push(input.trim().to_string());
+        candidates.push(input.trim().replace('-', "+").replace('_', "/"));
+        for mut candidate in candidates {
+            let rem = candidate.len() % 4;
+            if rem != 0 {
+                candidate.push_str(&"=".repeat(4 - rem));
+            }
+            if let Ok(bytes) = B64.decode(candidate.as_bytes()) {
+                if let Ok(text) = String::from_utf8(bytes) {
+                    let trimmed = text.trim().to_string();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn normalize_bing_result_url(raw: &str) -> String {
+        let input = raw.trim();
+        if input.is_empty() {
+            return String::new();
+        }
+        let Ok(parsed) = reqwest::Url::parse(input) else {
+            return input.to_string();
+        };
+        let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+        let path = parsed.path().to_ascii_lowercase();
+        if !host.ends_with("bing.com") || !path.starts_with("/ck/") {
+            return input.to_string();
+        }
+
+        for (k, v) in parsed.query_pairs() {
+            let key = k.as_ref();
+            let value = v.as_ref().trim();
+            if value.is_empty() {
+                continue;
+            }
+            if key == "url" {
+                if value.starts_with("http://") || value.starts_with("https://") {
+                    return value.to_string();
+                }
+            }
+            if key == "u" {
+                let decoded_url = urlencoding::decode(value)
+                    .map(|x| x.into_owned())
+                    .unwrap_or_else(|_| value.to_string());
+                if decoded_url.starts_with("http://") || decoded_url.starts_with("https://") {
+                    return decoded_url;
+                }
+                // Bing often stores target as base64 with an `a1` prefix.
+                let b64_payload = decoded_url.strip_prefix("a1").unwrap_or(decoded_url.as_str());
+                if let Some(text) = decode_b64_relaxed(b64_payload) {
+                    if text.starts_with("http://") || text.starts_with("https://") {
+                        return text;
+                    }
+                }
+            }
+        }
+        input.to_string()
+    }
+
+    fn canonical_url_key(raw: &str) -> String {
+        let normalized = normalize_bing_result_url(raw);
+        if normalized.is_empty() {
+            return String::new();
+        }
+        let mut key = normalized.trim().trim_end_matches('/').to_ascii_lowercase();
+        if let Some(stripped) = key.strip_prefix("https://") {
+            key = stripped.to_string();
+        } else if let Some(stripped) = key.strip_prefix("http://") {
+            key = stripped.to_string();
+        }
+        key
+    }
+
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(12))
         .build()
         .map_err(|err| format!("Build HTTP client failed: {err}"))?;
+    let limit = num_results.clamp(1, 10);
     let mut last_error: Option<String> = None;
     for base in ["https://cn.bing.com", "https://www.bing.com"] {
-        let url = format!("{base}/search?q={}", urlencoding::encode(query));
+        let item_sel =
+            Selector::parse("li.b_algo").map_err(|err| format!("Parse selector failed: {err}"))?;
+        let a_sel =
+            Selector::parse("h2 a").map_err(|err| format!("Parse selector failed: {err}"))?;
+        let p_sel = Selector::parse("div.b_caption p")
+            .map_err(|err| format!("Parse selector failed: {err}"))?;
+        let p_alt_sel = Selector::parse("div.b_caption div")
+            .map_err(|err| format!("Parse selector failed: {err}"))?;
+        let p_fallback_sel =
+            Selector::parse("p").map_err(|err| format!("Parse selector failed: {err}"))?;
+        let url = format!(
+            "{base}/search?q={}&form=QBLH&qs=HS&sp=-1&count=10&mkt=zh-CN&setlang=zh-Hans",
+            urlencoding::encode(query)
+        );
         let resp = client
             .get(&url)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            )
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
             .send()
             .await;
         let Ok(resp) = resp else {
@@ -523,37 +620,38 @@ async fn builtin_bing_search(query: &str, num_results: usize) -> Result<Value, S
             .await
             .map_err(|err| format!("Read search body failed: {err}"))?;
         let doc = Html::parse_document(&html);
-        let item_sel =
-            Selector::parse("li.b_algo").map_err(|err| format!("Parse selector failed: {err}"))?;
-        let title_sel =
-            Selector::parse("h2").map_err(|err| format!("Parse selector failed: {err}"))?;
-        let a_sel =
-            Selector::parse("h2 a").map_err(|err| format!("Parse selector failed: {err}"))?;
-        let p_sel = Selector::parse("p").map_err(|err| format!("Parse selector failed: {err}"))?;
+        let mut seen = std::collections::HashSet::<String>::new();
         let mut rows = Vec::new();
-        for item in doc.select(&item_sel).take(num_results.max(1)) {
-            let title = item
-                .select(&title_sel)
-                .next()
+        for item in doc.select(&item_sel) {
+            let title_node = item
+                .select(&a_sel)
+                .next();
+            let title = title_node
+                .as_ref()
                 .map(|n| clean_text(&n.text().collect::<Vec<_>>().join(" ")))
                 .unwrap_or_default();
-            let link = item
-                .select(&a_sel)
-                .next()
+            let raw_link = title_node
+                .as_ref()
                 .and_then(|n| n.value().attr("href"))
-                .unwrap_or_default()
-                .to_string();
+                .unwrap_or_default();
+            let link = normalize_bing_result_url(raw_link);
             let snippet = item
                 .select(&p_sel)
                 .next()
+                .or_else(|| item.select(&p_alt_sel).next())
+                .or_else(|| item.select(&p_fallback_sel).next())
                 .map(|n| clean_text(&n.text().collect::<Vec<_>>().join(" ")))
                 .unwrap_or_default();
-            if !title.is_empty() && !link.is_empty() {
+            let key = canonical_url_key(&link);
+            if !title.is_empty() && !link.is_empty() && !key.is_empty() && seen.insert(key) {
                 rows.push(serde_json::json!({"title": title, "url": link, "snippet": snippet}));
+                if rows.len() >= limit {
+                    break;
+                }
             }
         }
         if !rows.is_empty() {
-            return Ok(serde_json::json!({"query": query, "results": rows}));
+            return Ok(serde_json::json!({"query": query, "engine": "bing", "results": rows}));
         }
         last_error = Some("no results parsed".to_string());
     }
