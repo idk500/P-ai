@@ -35,11 +35,8 @@ fn get_prompt_preview(
         .cloned()
         .ok_or_else(|| "Selected agent not found.".to_string())?;
 
-    let conversation = data
-        .conversations
-        .iter()
-        .rfind(|c| c.status == "active" && c.agent_id == effective_agent_id)
-        .cloned()
+    let conversation = latest_active_conversation_index(&data, "", &effective_agent_id)
+        .and_then(|idx| data.conversations.get(idx).cloned())
         .unwrap_or_else(|| Conversation {
             id: "preview".to_string(),
             title: "Preview".to_string(),
@@ -300,6 +297,28 @@ fn get_archive_messages(
     let mut messages = archive.source_conversation.messages.clone();
     materialize_chat_message_parts_from_media_refs(&mut messages, &state.data_path);
     Ok(messages)
+}
+
+#[tauri::command]
+fn get_archive_summary(
+    archive_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let guard = state
+        .state_lock
+        .lock()
+        .map_err(|_| "Failed to lock state mutex".to_string())?;
+
+    let data = read_app_data(&state.data_path)?;
+    drop(guard);
+
+    let archive = data
+        .archived_conversations
+        .iter()
+        .find(|a| a.archive_id == archive_id)
+        .ok_or_else(|| "Archive not found".to_string())?;
+
+    Ok(archive.summary.clone())
 }
 
 #[tauri::command]
@@ -1214,11 +1233,15 @@ async fn summarize_archived_conversation_with_model(
         "你要做归档总结。输出严格 JSON，不要 markdown，不要代码块。\n\
          JSON schema: {{\"summary\":\"string\",\"memories\":[{{\"content\":\"string\",\"keywords\":[\"string\"]}}]}}\n\
          规则:\n\
-         1) summary 必填，简洁说明这轮对话的目标、结论、待办。\n\
-         2) memories 最多 7 条；非必要不生成；仅保留对用户长期有价值的信息。\n\
-         3) 不要记录高风险敏感信息（密码、密钥、身份证、银行卡等）。\n\
-         4) 你是 {assistant_name}，用户称谓是 {user_name}。\n\
-         5) {tool_rules}",
+         1) summary 必填，必须按时间顺序写，语言自然、具体，不要模板化空话。\n\
+         2) summary 必须覆盖并按此顺序组织：论题（讨论了什么）-> 经过（关键分歧/变化）-> 结论（已决定事项）。\n\
+         3) summary 必须单独明确两部分：悬而未定的论题；接下来建议决策（给出可执行的下一步）。\n\
+         4) 如有多个论题，必须逐个输出（按时间先后分别写清每个论题的经过与结论），禁止合并成笼统描述。\n\
+         5) summary 必须保留可追溯锚点：关键对象、关键时间点、关键数字或约束条件；不确定就写“待确认”，禁止猜测。\n\
+         6) memories 最多 7 条；非必要不生成；仅保留对用户长期有价值的信息。\n\
+         7) 不要记录高风险敏感信息（密码、密钥、身份证、银行卡等）。\n\
+         8) 你是 {assistant_name}，用户称谓是 {user_name}。\n\
+         9) {tool_rules}",
         assistant_name = agent.name,
         user_name = user_alias,
         tool_rules = summary_tool_rules
@@ -1417,4 +1440,3 @@ async fn force_archive_current(
         elapsed_ms: Some(started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
     })
 }
-

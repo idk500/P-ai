@@ -86,6 +86,10 @@
       :archives="archives"
       :selected-archive-id="selectedArchiveId"
       :archive-messages="archiveMessages"
+      :archive-summary-text="archiveSummaryText"
+      :unarchived-conversations="unarchivedConversations"
+      :selected-unarchived-conversation-id="selectedUnarchivedConversationId"
+      :unarchived-messages="unarchivedMessages"
       :current-history="currentHistory"
       :message-text="messageText"
       :extract-message-images="extractMessageImages"
@@ -138,9 +142,11 @@
       :on-regenerate-turn="handleRegenerateTurn"
       :load-archives="loadArchives"
       :select-archive="selectArchive"
+      :select-unarchived-conversation="selectUnarchivedConversation"
       :export-archive="exportArchive"
       :import-archive-file="prepareArchiveImport"
       :delete-archive="deleteArchive"
+      :delete-unarchived-conversation="deleteUnarchivedConversation"
       :close-history="closeHistory"
       :close-memory-viewer="closeMemoryViewer"
       :prev-memory-page="() => { memoryPage--; }"
@@ -419,9 +425,15 @@ const {
 const {
   archives,
   archiveMessages,
+  archiveSummaryText,
   selectedArchiveId,
+  unarchivedConversations,
+  unarchivedMessages,
+  selectedUnarchivedConversationId,
   loadArchives,
   selectArchive,
+  selectUnarchivedConversation,
+  deleteUnarchivedConversation,
   deleteArchive,
   exportArchive,
   buildArchiveImportPreview,

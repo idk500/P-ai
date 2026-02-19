@@ -591,6 +591,157 @@ fn get_chat_snapshot(
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UnarchivedConversationSummary {
+    conversation_id: String,
+    title: String,
+    updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_message_at: Option<String>,
+    message_count: usize,
+    agent_id: String,
+    api_config_id: String,
+}
+
+fn conversation_preview_title(conversation: &Conversation) -> String {
+    let text = conversation
+        .messages
+        .iter()
+        .find(|m| m.role == "user")
+        .map(|m| {
+            m.parts
+                .iter()
+                .filter_map(|p| match p {
+                    MessagePart::Text { text } => Some(text.trim()),
+                    _ => None,
+                })
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    let compact = clean_text(text.trim());
+    if compact.is_empty() {
+        "无内容".to_string()
+    } else {
+        compact.chars().take(12).collect::<String>()
+    }
+}
+
+#[tauri::command]
+fn list_unarchived_conversations(state: State<'_, AppState>) -> Result<Vec<UnarchivedConversationSummary>, String> {
+    let guard = state
+        .state_lock
+        .lock()
+        .map_err(|_| "Failed to lock state mutex".to_string())?;
+    let mut data = read_app_data(&state.data_path)?;
+    let defaults_changed = ensure_default_agent(&mut data);
+
+    let mut summaries = data
+        .conversations
+        .iter()
+        .filter(|c| c.status == "active")
+        .map(|c| {
+            let last_message_at = c.messages.last().map(|m| m.created_at.clone());
+            UnarchivedConversationSummary {
+                conversation_id: c.id.clone(),
+                title: if c.title.trim().is_empty() {
+                    conversation_preview_title(c)
+                } else {
+                    c.title.clone()
+                },
+                updated_at: c.updated_at.clone(),
+                last_message_at,
+                message_count: c.messages.len(),
+                agent_id: c.agent_id.clone(),
+                api_config_id: c.api_config_id.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    summaries.sort_by(|a, b| {
+        let bk = b
+            .last_message_at
+            .as_deref()
+            .unwrap_or(b.updated_at.as_str());
+        let ak = a
+            .last_message_at
+            .as_deref()
+            .unwrap_or(a.updated_at.as_str());
+        bk.cmp(ak).then_with(|| b.updated_at.cmp(&a.updated_at))
+    });
+
+    if defaults_changed {
+        write_app_data(&state.data_path, &data)?;
+    }
+    drop(guard);
+    Ok(summaries)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GetUnarchivedConversationMessagesInput {
+    conversation_id: String,
+}
+
+#[tauri::command]
+fn get_unarchived_conversation_messages(
+    input: GetUnarchivedConversationMessagesInput,
+    state: State<'_, AppState>,
+) -> Result<Vec<ChatMessage>, String> {
+    let conversation_id = input.conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err("conversationId is required.".to_string());
+    }
+    let guard = state
+        .state_lock
+        .lock()
+        .map_err(|_| "Failed to lock state mutex".to_string())?;
+    let data = read_app_data(&state.data_path)?;
+    drop(guard);
+
+    let mut messages = data
+        .conversations
+        .iter()
+        .find(|c| c.status == "active" && c.id == conversation_id)
+        .map(|c| c.messages.clone())
+        .ok_or_else(|| "Unarchived conversation not found.".to_string())?;
+    materialize_chat_message_parts_from_media_refs(&mut messages, &state.data_path);
+    Ok(messages)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteUnarchivedConversationInput {
+    conversation_id: String,
+}
+
+#[tauri::command]
+fn delete_unarchived_conversation(
+    input: DeleteUnarchivedConversationInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let conversation_id = input.conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err("conversationId is required.".to_string());
+    }
+    let guard = state
+        .state_lock
+        .lock()
+        .map_err(|_| "Failed to lock state mutex".to_string())?;
+    let mut data = read_app_data(&state.data_path)?;
+    let before = data.conversations.len();
+    data.conversations
+        .retain(|c| !(c.status == "active" && c.id == conversation_id));
+    if data.conversations.len() == before {
+        drop(guard);
+        return Err("Unarchived conversation not found.".to_string());
+    }
+    write_app_data(&state.data_path, &data)?;
+    drop(guard);
+    Ok(())
+}
+
 #[tauri::command]
 fn get_active_conversation_messages(
     input: SessionSelector,
