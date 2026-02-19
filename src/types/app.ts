@@ -107,6 +107,8 @@ export type ChatTurn = {
   assistantText: string;
   assistantReasoningStandard: string;
   assistantReasoningInline: string;
+  assistantToolCallCount: number;
+  assistantLastToolName: string;
 };
 
 export type ArchiveSummary = {
@@ -114,6 +116,16 @@ export type ArchiveSummary = {
   archivedAt: string;
   title: string;
   messageCount?: number;
+};
+
+export type UnarchivedConversationSummary = {
+  conversationId: string;
+  title: string;
+  updatedAt: string;
+  lastMessageAt?: string;
+  messageCount: number;
+  agentId: string;
+  apiConfigId: string;
 };
 
 export type ResponseStyleOption = {

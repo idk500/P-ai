@@ -48,6 +48,9 @@ export function useViewRefresh(options: UseViewRefreshOptions) {
         options.perfLog("refreshAll/refreshConversationHistory", tMessages);
         options.resetVisibleTurnCount();
       } else if (options.viewMode.value === "archives") {
+        const tMessages = options.perfNow();
+        await options.refreshConversationHistory();
+        options.perfLog("refreshAll/refreshConversationHistory", tMessages);
         const tArchives = options.perfNow();
         await options.loadArchives();
         options.perfLog("refreshAll/loadArchives", tArchives);
@@ -81,6 +84,7 @@ export function useViewRefresh(options: UseViewRefreshOptions) {
     if (options.viewMode.value === "chat") {
       await options.refreshConversationHistory();
     } else if (options.viewMode.value === "archives") {
+      await options.refreshConversationHistory();
       await options.loadArchives();
     }
   }

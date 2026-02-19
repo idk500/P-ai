@@ -1,11 +1,35 @@
 <template>
   <div class="flex flex-col gap-3 h-full">
+    <div class="join w-fit">
+      <button
+        type="button"
+        class="btn btn-sm join-item"
+        :class="viewMode === 'current' ? 'btn-primary' : 'btn-ghost'"
+        @click="switchViewMode('current')"
+      >
+        {{ t("archives.currentUnarchived") }}
+      </button>
+      <button
+        type="button"
+        class="btn btn-sm join-item"
+        :class="viewMode === 'archive' ? 'btn-primary' : 'btn-ghost'"
+        @click="switchViewMode('archive')"
+      >
+        {{ t("archives.archivedMessages") }}
+      </button>
+    </div>
     <div class="flex items-center gap-2">
       <button class="btn bg-base-100 border-base-300 hover:bg-base-200" @click="$emit('loadArchives')">{{ t("archives.refresh") }}</button>
       <button class="btn bg-base-100 border-base-300 hover:bg-base-200" @click="triggerArchiveImport">{{ t("archives.importJson") }}</button>
-      <button class="btn bg-base-100 border-base-300 hover:bg-base-200" :disabled="!selectedArchiveId" @click="$emit('exportArchive', { format: 'markdown' })">{{ t("archives.exportMarkdown") }}</button>
-      <button class="btn bg-base-100 border-base-300 hover:bg-base-200" :disabled="!selectedArchiveId" @click="$emit('exportArchive', { format: 'json' })">{{ t("archives.exportJson") }}</button>
-      <button class="btn bg-base-100 border-base-300 hover:bg-base-200 text-error" :disabled="!selectedArchiveId" @click="onDeleteClick(selectedArchiveId)">{{ t("common.delete") }}</button>
+      <button class="btn bg-base-100 border-base-300 hover:bg-base-200" :disabled="viewMode !== 'archive' || !selectedArchiveId" @click="$emit('exportArchive', { format: 'markdown' })">{{ t("archives.exportMarkdown") }}</button>
+      <button class="btn bg-base-100 border-base-300 hover:bg-base-200" :disabled="viewMode !== 'archive' || !selectedArchiveId" @click="$emit('exportArchive', { format: 'json' })">{{ t("archives.exportJson") }}</button>
+      <button
+        class="btn bg-base-100 border-base-300 hover:bg-base-200 text-error"
+        :disabled="(viewMode === 'archive' && !selectedArchiveId) || (viewMode === 'current' && !selectedUnarchivedConversationId)"
+        @click="viewMode === 'archive' ? onDeleteArchiveClick(selectedArchiveId) : onDeleteUnarchivedClick(selectedUnarchivedConversationId)"
+      >
+        {{ t("common.delete") }}
+      </button>
       <input
         ref="archiveImportInputRef"
         type="file"
@@ -16,7 +40,19 @@
     </div>
     <div class="flex gap-3 flex-1 min-h-0">
       <div class="w-56 overflow-auto">
-        <div class="flex flex-col gap-2">
+        <div v-if="viewMode === 'current'" class="flex flex-col gap-2">
+          <div
+            v-for="c in unarchivedConversations"
+            :key="c.conversationId"
+            class="p-2 rounded cursor-pointer hover:bg-base-200"
+            :class="{ 'bg-primary/10': c.conversationId === selectedUnarchivedConversationId }"
+            @click="$emit('selectUnarchivedConversation', c.conversationId)"
+          >
+            <div class="font-medium truncate text-sm">{{ c.title }}</div>
+            <div class="text-xs opacity-70 truncate">{{ formatDate(c.lastMessageAt || c.updatedAt) }}</div>
+          </div>
+        </div>
+        <div v-else class="flex flex-col gap-2">
           <div
             v-for="a in archives"
             :key="a.archiveId"
@@ -30,6 +66,16 @@
         </div>
       </div>
       <div class="flex-1 overflow-auto space-y-2">
+        <div class="text-xs opacity-70 sticky top-0 z-10 bg-base-200/90 backdrop-blur px-1 py-1">
+          {{ viewMode === "current" ? t("archives.currentUnarchived") : t("archives.archivedMessages") }}
+        </div>
+        <div
+          v-if="viewMode === 'archive' && archiveSummaryText"
+          class="border border-primary/20 rounded p-3 bg-primary/5"
+        >
+          <div class="text-xs opacity-70 mb-1">{{ t("archives.summary") }}</div>
+          <div class="whitespace-pre-wrap break-words text-sm">{{ archiveSummaryText }}</div>
+        </div>
         <div v-for="m in visibleMessages" :key="m.id" class="border border-base-300 rounded p-3 bg-base-100">
           <div class="flex items-center justify-between mb-1">
             <div class="badge badge-primary badge-sm">{{ roleLabel(m.role) }}</div>
@@ -61,27 +107,40 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import type { ArchiveSummary, ChatMessage, ChatRole, MessagePart } from "../../../types/app";
+import type { ArchiveSummary, ChatMessage, ChatRole, MessagePart, UnarchivedConversationSummary } from "../../../types/app";
 
 const props = defineProps<{
   archives: ArchiveSummary[];
   selectedArchiveId: string;
   archiveMessages: ChatMessage[];
+  archiveSummaryText: string;
+  unarchivedConversations: UnarchivedConversationSummary[];
+  selectedUnarchivedConversationId: string;
+  unarchivedMessages: ChatMessage[];
 }>();
 const { t, locale } = useI18n();
 
 const emit = defineEmits<{
   (e: "loadArchives"): void;
   (e: "selectArchive", archiveId: string): void;
+  (e: "selectUnarchivedConversation", conversationId: string): void;
   (e: "exportArchive", payload: { format: "markdown" | "json" }): void;
   (e: "deleteArchive", archiveId: string): void;
+  (e: "deleteUnarchivedConversation", conversationId: string): void;
   (e: "importArchiveFile", file: File): void;
 }>();
 
+const viewMode = ref<"current" | "archive">("archive");
+
 const visibleMessages = computed(() =>
-  props.archiveMessages.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool"),
+  (viewMode.value === "current" ? props.unarchivedMessages : props.archiveMessages)
+    .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool"),
 );
 const archiveImportInputRef = ref<HTMLInputElement | null>(null);
+
+function switchViewMode(mode: "current" | "archive") {
+  viewMode.value = mode;
+}
 
 function triggerArchiveImport() {
   if (archiveImportInputRef.value) {
@@ -97,10 +156,16 @@ function onArchiveImportChange(event: Event) {
   emit("importArchiveFile", file);
 }
 
-function onDeleteClick(archiveId: string) {
+function onDeleteArchiveClick(archiveId: string) {
   if (!archiveId) return;
   if (!window.confirm(t("archives.deleteConfirm"))) return;
   emit("deleteArchive", archiveId);
+}
+
+function onDeleteUnarchivedClick(conversationId: string) {
+  if (!conversationId) return;
+  if (!window.confirm(t("archives.deleteUnarchivedConfirm"))) return;
+  emit("deleteUnarchivedConversation", conversationId);
 }
 
 function messageText(msg: ChatMessage): string {

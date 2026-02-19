@@ -5,9 +5,19 @@ fn latest_active_conversation_index(
 ) -> Option<usize> {
     data.conversations
         .iter()
-        .rposition(|c| {
-            c.status == "active" && c.agent_id == agent_id
+        .enumerate()
+        .filter(|(_, c)| c.status == "active" && c.agent_id == agent_id)
+        .max_by(|(idx_a, a), (idx_b, b)| {
+            let a_updated = a.updated_at.trim();
+            let b_updated = b.updated_at.trim();
+            let a_created = a.created_at.trim();
+            let b_created = b.created_at.trim();
+            a_updated
+                .cmp(b_updated)
+                .then_with(|| a_created.cmp(b_created))
+                .then_with(|| idx_a.cmp(idx_b))
         })
+        .map(|(idx, _)| idx)
 }
 
 fn ensure_active_conversation_index(
