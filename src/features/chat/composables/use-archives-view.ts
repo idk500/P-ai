@@ -1,6 +1,6 @@
 import { ref } from "vue";
 import { invokeTauri } from "../../../services/tauri-api";
-import type { ArchiveSummary, ChatMessage } from "../../../types/app";
+import type { ArchiveSummary, ChatMessage, UnarchivedConversationSummary } from "../../../types/app";
 
 type TrFn = (key: string, params?: Record<string, unknown>) => string;
 
@@ -69,14 +69,53 @@ function archiveIdFromPayloadObject(archive: Record<string, unknown>): string {
 export function useArchivesView(options: UseArchivesViewOptions) {
   const archives = ref<ArchiveSummary[]>([]);
   const archiveMessages = ref<ChatMessage[]>([]);
+  const archiveSummaryText = ref("");
   const selectedArchiveId = ref("");
+  const unarchivedConversations = ref<UnarchivedConversationSummary[]>([]);
+  const unarchivedMessages = ref<ChatMessage[]>([]);
+  const selectedUnarchivedConversationId = ref("");
+
+  async function selectUnarchivedConversation(conversationId: string) {
+    const previousId = selectedUnarchivedConversationId.value;
+    const previousMessages = unarchivedMessages.value;
+    try {
+      const messages = await invokeTauri<ChatMessage[]>("get_unarchived_conversation_messages", {
+        input: { conversationId },
+      });
+      selectedUnarchivedConversationId.value = conversationId;
+      unarchivedMessages.value = messages;
+    } catch (e) {
+      selectedUnarchivedConversationId.value = previousId;
+      unarchivedMessages.value = previousMessages;
+      options.setStatusError("status.loadMessagesFailed", e);
+    }
+  }
+
+  async function loadUnarchivedConversations() {
+    try {
+      unarchivedConversations.value = await invokeTauri<UnarchivedConversationSummary[]>("list_unarchived_conversations");
+      if (unarchivedConversations.value.length === 0) {
+        selectedUnarchivedConversationId.value = "";
+        unarchivedMessages.value = [];
+        return;
+      }
+      const targetId = unarchivedConversations.value.some((item) => item.conversationId === selectedUnarchivedConversationId.value)
+        ? selectedUnarchivedConversationId.value
+        : unarchivedConversations.value[0].conversationId;
+      await selectUnarchivedConversation(targetId);
+    } catch (e) {
+      options.setStatusError("status.loadMessagesFailed", e);
+    }
+  }
 
   async function loadArchives() {
+    await loadUnarchivedConversations();
     try {
       archives.value = await invokeTauri<ArchiveSummary[]>("list_archives");
       if (archives.value.length === 0) {
         selectedArchiveId.value = "";
         archiveMessages.value = [];
+        archiveSummaryText.value = "";
         return;
       }
       const targetId = archives.value.some((a) => a.archiveId === selectedArchiveId.value)
@@ -91,12 +130,16 @@ export function useArchivesView(options: UseArchivesViewOptions) {
   async function selectArchive(archiveId: string) {
     const previousId = selectedArchiveId.value;
     const previousMessages = archiveMessages.value;
+    const previousSummary = archiveSummaryText.value;
     try {
+      const summary = await invokeTauri<string>("get_archive_summary", { archiveId });
       const messages = await invokeTauri<ChatMessage[]>("get_archive_messages", { archiveId });
       selectedArchiveId.value = archiveId;
+      archiveSummaryText.value = String(summary || "").trim();
       archiveMessages.value = messages;
     } catch (e) {
       selectedArchiveId.value = previousId;
+      archiveSummaryText.value = previousSummary;
       archiveMessages.value = previousMessages;
       options.setStatusError("status.loadArchivesFailed", e);
     }
@@ -109,11 +152,29 @@ export function useArchivesView(options: UseArchivesViewOptions) {
       options.setStatus(options.t("status.archiveDeleted"));
       if (selectedArchiveId.value === archiveId) {
         selectedArchiveId.value = "";
+        archiveSummaryText.value = "";
         archiveMessages.value = [];
       }
       await loadArchives();
     } catch (e) {
       options.setStatusError("status.deleteArchiveFailed", e);
+    }
+  }
+
+  async function deleteUnarchivedConversation(conversationId: string) {
+    if (!conversationId) return;
+    try {
+      await invokeTauri("delete_unarchived_conversation", {
+        input: { conversationId },
+      });
+      options.setStatus(options.t("status.unarchivedConversationDeleted"));
+      if (selectedUnarchivedConversationId.value === conversationId) {
+        selectedUnarchivedConversationId.value = "";
+        unarchivedMessages.value = [];
+      }
+      await loadArchives();
+    } catch (e) {
+      options.setStatusError("status.deleteUnarchivedConversationFailed", e);
     }
   }
 
@@ -190,9 +251,16 @@ export function useArchivesView(options: UseArchivesViewOptions) {
   return {
     archives,
     archiveMessages,
+    archiveSummaryText,
     selectedArchiveId,
+    unarchivedConversations,
+    unarchivedMessages,
+    selectedUnarchivedConversationId,
+    selectUnarchivedConversation,
+    loadUnarchivedConversations,
     loadArchives,
     selectArchive,
+    deleteUnarchivedConversation,
     deleteArchive,
     exportArchive,
     buildArchiveImportPreview,

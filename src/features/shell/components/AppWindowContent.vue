@@ -128,11 +128,17 @@
       :archives="archives"
       :selected-archive-id="selectedArchiveId"
       :archive-messages="archiveMessages"
+      :archive-summary-text="archiveSummaryText"
+      :unarchived-conversations="unarchivedConversations"
+      :selected-unarchived-conversation-id="selectedUnarchivedConversationId"
+      :unarchived-messages="unarchivedMessages"
       @load-archives="loadArchives"
       @select-archive="selectArchive"
+      @select-unarchived-conversation="selectUnarchivedConversation"
       @export-archive="exportArchive"
       @import-archive-file="importArchiveFile"
       @delete-archive="deleteArchive"
+      @delete-unarchived-conversation="deleteUnarchivedConversation"
     />
     <dialog :ref="historyDialogVNodeRef" class="modal">
       <HistoryDialog
@@ -204,6 +210,7 @@ import type {
   PersonaProfile,
   ResponseStyleOption,
   ToolLoadStatus,
+  UnarchivedConversationSummary,
 } from "../../../types/app";
 
 type MemoryItem = { id: string; content: string; keywords: string[] };
@@ -274,6 +281,10 @@ const props = defineProps<{
   archives: ArchiveSummary[];
   selectedArchiveId: string;
   archiveMessages: ChatMessage[];
+  archiveSummaryText: string;
+  unarchivedConversations: UnarchivedConversationSummary[];
+  selectedUnarchivedConversationId: string;
+  unarchivedMessages: ChatMessage[];
   currentHistory: ChatMessage[];
   messageText: (message: ChatMessage) => string;
   extractMessageImages: (message?: ChatMessage) => Array<{ mime: string; bytesBase64: string }>;
@@ -326,9 +337,11 @@ const props = defineProps<{
   onRegenerateTurn: (payload: { turnId: string }) => void;
   loadArchives: () => void;
   selectArchive: (id: string) => void;
+  selectUnarchivedConversation: (id: string) => void;
   exportArchive: (payload: { format: "markdown" | "json" }) => void;
   importArchiveFile: (file: File) => void;
   deleteArchive: (id: string) => void;
+  deleteUnarchivedConversation: (id: string) => void;
   closeHistory: () => void;
   closeMemoryViewer: () => void;
   prevMemoryPage: () => void;
