@@ -48,6 +48,8 @@ fn get_prompt_preview(
             last_assistant_at: None,
             last_context_usage_ratio: 0.0,
             status: "active".to_string(),
+            summary: String::new(),
+            archived_at: None,
             messages: Vec::new(),
             memory_recall_table: Vec::new(),
         });
@@ -64,13 +66,11 @@ fn get_prompt_preview(
         Some(&state.data_path),
     );
     let last_archive_summary = data
-        .archived_conversations
+        .conversations
         .iter()
         .rev()
-        .find(|a| {
-            a.source_conversation.agent_id == effective_agent_id && !a.summary.trim().is_empty()
-        })
-        .map(|a| a.summary.clone());
+        .find(|c| c.agent_id == effective_agent_id && !c.summary.trim().is_empty())
+        .map(|c| c.summary.clone());
     if let Some(summary) = last_archive_summary {
         prepared.preamble.push_str(
             "\n[HIDDEN ARCHIVE RECAP]\nUSER: 上次我们聊到哪里？\nASSISTANT: ",
@@ -250,6 +250,48 @@ fn archive_first_user_preview(conversation: &Conversation) -> String {
     }
 }
 
+fn conversation_to_archive(conversation: &Conversation) -> ConversationArchive {
+    ConversationArchive {
+        archive_id: conversation.id.clone(),
+        archived_at: conversation
+            .archived_at
+            .clone()
+            .unwrap_or_else(|| conversation.updated_at.clone()),
+        reason: "conversation_summary".to_string(),
+        summary: conversation.summary.clone(),
+        source_conversation: conversation.clone(),
+    }
+}
+
+fn archived_conversations_from_data(data: &AppData) -> Vec<ConversationArchive> {
+    let mut out = data
+        .conversations
+        .iter()
+        .filter(|c| !c.summary.trim().is_empty())
+        .map(conversation_to_archive)
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
+    out
+}
+
+fn archive_to_conversation(archive: ConversationArchive) -> Conversation {
+    let mut conversation = archive.source_conversation;
+    if conversation.id.trim().is_empty() {
+        conversation.id = archive.archive_id;
+    }
+    if conversation.id.trim().is_empty() {
+        conversation.id = Uuid::new_v4().to_string();
+    }
+    if conversation.summary.trim().is_empty() {
+        conversation.summary = archive.summary;
+    }
+    if conversation.archived_at.as_deref().unwrap_or("").trim().is_empty() {
+        conversation.archived_at = Some(archive.archived_at);
+    }
+    conversation.status = "archived".to_string();
+    conversation
+}
+
 #[tauri::command]
 fn list_archives(state: State<'_, AppState>) -> Result<Vec<ArchiveSummary>, String> {
     let guard = state
@@ -261,15 +303,19 @@ fn list_archives(state: State<'_, AppState>) -> Result<Vec<ArchiveSummary>, Stri
     drop(guard);
 
     let mut summaries = data
-        .archived_conversations
+        .conversations
         .iter()
+        .filter(|c| !c.summary.trim().is_empty())
         .map(|archive| ArchiveSummary {
-            archive_id: archive.archive_id.clone(),
-            archived_at: archive.archived_at.clone(),
-            title: archive_first_user_preview(&archive.source_conversation),
-            message_count: archive.source_conversation.messages.len(),
-            api_config_id: archive.source_conversation.api_config_id.clone(),
-            agent_id: archive.source_conversation.agent_id.clone(),
+            archive_id: archive.id.clone(),
+            archived_at: archive
+                .archived_at
+                .clone()
+                .unwrap_or_else(|| archive.updated_at.clone()),
+            title: archive_first_user_preview(archive),
+            message_count: archive.messages.len(),
+            api_config_id: archive.api_config_id.clone(),
+            agent_id: archive.agent_id.clone(),
         })
         .collect::<Vec<_>>();
     summaries.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
@@ -290,12 +336,12 @@ fn get_archive_messages(
     drop(guard);
 
     let archive = data
-        .archived_conversations
+        .conversations
         .iter()
-        .find(|a| a.archive_id == archive_id)
+        .find(|c| c.id == archive_id && !c.summary.trim().is_empty())
         .ok_or_else(|| "Archive not found".to_string())?;
 
-    let mut messages = archive.source_conversation.messages.clone();
+    let mut messages = archive.messages.clone();
     materialize_chat_message_parts_from_media_refs(&mut messages, &state.data_path);
     Ok(messages)
 }
@@ -314,9 +360,9 @@ fn get_archive_summary(
     drop(guard);
 
     let archive = data
-        .archived_conversations
+        .conversations
         .iter()
-        .find(|a| a.archive_id == archive_id)
+        .find(|c| c.id == archive_id && !c.summary.trim().is_empty())
         .ok_or_else(|| "Archive not found".to_string())?;
 
     Ok(archive.summary.clone())
@@ -334,11 +380,11 @@ fn delete_archive(archive_id: String, state: State<'_, AppState>) -> Result<(), 
         .map_err(|_| "Failed to lock state mutex".to_string())?;
 
     let mut data = read_app_data(&state.data_path)?;
-    let before = data.archived_conversations.len();
-    data.archived_conversations
-        .retain(|a| a.archive_id != archive_id);
+    let before = data.conversations.len();
+    data.conversations
+        .retain(|c| !(c.id == archive_id && !c.summary.trim().is_empty()));
 
-    if data.archived_conversations.len() == before {
+    if data.conversations.len() == before {
         drop(guard);
         return Err("Archive not found".to_string());
     }
@@ -399,6 +445,12 @@ struct ArchiveImportAppDataPayload {
     archived_conversations: Vec<ConversationArchive>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveImportConversationsPayload {
+    conversations: Vec<Conversation>,
+}
+
 fn parse_archives_for_import(raw: &str) -> Result<Vec<ConversationArchive>, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -418,6 +470,17 @@ fn parse_archives_for_import(raw: &str) -> Result<Vec<ConversationArchive>, Stri
     if let Ok(batch) = serde_json::from_str::<ArchiveImportAppDataPayload>(trimmed) {
         if !batch.archived_conversations.is_empty() {
             return Ok(batch.archived_conversations);
+        }
+    }
+    if let Ok(batch) = serde_json::from_str::<ArchiveImportConversationsPayload>(trimmed) {
+        let out = batch
+            .conversations
+            .into_iter()
+            .filter(|c| !c.summary.trim().is_empty())
+            .map(|c| conversation_to_archive(&c))
+            .collect::<Vec<_>>();
+        if !out.is_empty() {
+            return Ok(out);
         }
     }
     if let Ok(list) = serde_json::from_str::<Vec<ConversationArchive>>(trimmed) {
@@ -707,12 +770,12 @@ fn export_archive_to_file(
     drop(guard);
 
     let archive = data
-        .archived_conversations
+        .conversations
         .iter()
-        .find(|a| a.archive_id == input.archive_id)
+        .find(|c| c.id == input.archive_id && !c.summary.trim().is_empty())
         .cloned()
         .ok_or_else(|| "Archive not found".to_string())?;
-    let mut archive = archive;
+    let mut archive = conversation_to_archive(&archive);
     if export_format == "json" {
         materialize_chat_message_parts_from_media_refs(
             &mut archive.source_conversation.messages,
@@ -773,9 +836,9 @@ fn import_archives_from_json(
         .map_err(|_| "Failed to lock state mutex".to_string())?;
     let mut data = read_app_data(&state.data_path)?;
 
-    let mut index_by_archive_id = std::collections::HashMap::<String, usize>::new();
-    for (idx, archive) in data.archived_conversations.iter().enumerate() {
-        index_by_archive_id.insert(archive.archive_id.clone(), idx);
+    let mut index_by_conversation_id = std::collections::HashMap::<String, usize>::new();
+    for (idx, conv) in data.conversations.iter().enumerate() {
+        index_by_conversation_id.insert(conv.id.clone(), idx);
     }
 
     let mut imported_count = 0usize;
@@ -789,12 +852,14 @@ fn import_archives_from_json(
 
     for archive in incoming_archives {
         let archive_id = archive.archive_id.clone();
-        if let Some(idx) = index_by_archive_id.get(&archive_id).copied() {
-            data.archived_conversations[idx] = archive;
+        let conversation = archive_to_conversation(archive);
+        let conversation_id = conversation.id.clone();
+        if let Some(idx) = index_by_conversation_id.get(&conversation_id).copied() {
+            data.conversations[idx] = conversation;
             replaced_count += 1;
         } else {
-            data.archived_conversations.push(archive);
-            index_by_archive_id.insert(archive_id.clone(), data.archived_conversations.len() - 1);
+            data.conversations.push(conversation);
+            index_by_conversation_id.insert(conversation_id, data.conversations.len() - 1);
             imported_count += 1;
         }
         if selected_archive_id.is_none() {
@@ -809,7 +874,7 @@ fn import_archives_from_json(
         imported_count,
         replaced_count,
         skipped_count,
-        total_count: data.archived_conversations.len(),
+        total_count: archived_conversations_from_data(&data).len(),
         selected_archive_id,
     })
 }

@@ -6,7 +6,7 @@ fn latest_active_conversation_index(
     data.conversations
         .iter()
         .enumerate()
-        .filter(|(_, c)| c.status == "active" && c.agent_id == agent_id)
+        .filter(|(_, c)| c.status == "active" && c.summary.trim().is_empty() && c.agent_id == agent_id)
         .max_by(|(idx_a, a), (idx_b, b)| {
             let a_updated = a.updated_at.trim();
             let b_updated = b.updated_at.trim();
@@ -46,6 +46,8 @@ fn ensure_active_conversation_index(
         last_assistant_at: None,
         last_context_usage_ratio: 0.0,
         status: "active".to_string(),
+        summary: String::new(),
+        archived_at: None,
         messages: Vec::new(),
         memory_recall_table: Vec::new(),
     };
@@ -173,17 +175,14 @@ fn archive_conversation_now(
         .conversations
         .iter()
         .position(|c| c.id == conversation_id && c.status == "active")?;
-    let mut source = data.conversations.remove(idx);
-    source.status = "archived".to_string();
-    source.updated_at = now_iso();
-    let archive_id = Uuid::new_v4().to_string();
-    data.archived_conversations.push(ConversationArchive {
-        archive_id: archive_id.clone(),
-        archived_at: now_iso(),
-        reason: reason.to_string(),
-        summary: summary.to_string(),
-        source_conversation: source,
-    });
+    let conv = data.conversations.get_mut(idx)?;
+    let now = now_iso();
+    conv.status = "archived".to_string();
+    conv.summary = summary.to_string();
+    conv.archived_at = Some(now.clone());
+    conv.updated_at = now;
+    let archive_id = conv.id.clone();
+    let _ = reason;
     clear_screenshot_artifact_cache();
     Some(archive_id)
 }

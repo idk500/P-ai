@@ -342,7 +342,7 @@ async fn send_chat_message(
                 if let Some(conv) = data
                     .conversations
                     .iter_mut()
-                    .find(|c| c.id == source.id && c.status == "active")
+                    .find(|c| c.id == source.id && c.summary.trim().is_empty())
                 {
                     let fallback_messages = keep_recent_turns(&source.messages, 3);
                     conv.messages = fallback_messages.clone();
@@ -452,14 +452,11 @@ async fn send_chat_message(
         let memory_board_xml =
             build_memory_board_xml_from_recall_ids(&store_memories, &latest_recall_ids);
         let last_archive_summary = data
-            .archived_conversations
+            .conversations
             .iter()
             .rev()
-            .find(|a| {
-                a.source_conversation.agent_id == effective_agent_id
-                    && !a.summary.trim().is_empty()
-            })
-            .map(|a| a.summary.clone());
+            .find(|c| c.agent_id == effective_agent_id && !c.summary.trim().is_empty())
+            .map(|c| c.summary.clone());
 
         let mut extra_text_blocks = Vec::<String>::new();
         if let Some(xml) = &memory_board_xml {
@@ -580,7 +577,7 @@ async fn send_chat_message(
         if let Some(conversation) = data
             .conversations
             .iter_mut()
-            .find(|c| c.id == conversation_id && c.status == "active")
+            .find(|c| c.id == conversation_id && c.summary.trim().is_empty())
         {
             let now = now_iso();
             conversation.messages.push(ChatMessage {
