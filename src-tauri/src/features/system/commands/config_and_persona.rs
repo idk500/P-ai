@@ -641,7 +641,7 @@ fn list_unarchived_conversations(state: State<'_, AppState>) -> Result<Vec<Unarc
     let mut summaries = data
         .conversations
         .iter()
-        .filter(|c| c.status == "active")
+        .filter(|c| c.summary.trim().is_empty())
         .map(|c| {
             let last_message_at = c.messages.last().map(|m| m.created_at.clone());
             UnarchivedConversationSummary {
@@ -703,7 +703,7 @@ fn get_unarchived_conversation_messages(
     let mut messages = data
         .conversations
         .iter()
-        .find(|c| c.status == "active" && c.id == conversation_id)
+        .find(|c| c.summary.trim().is_empty() && c.id == conversation_id)
         .map(|c| c.messages.clone())
         .ok_or_else(|| "Unarchived conversation not found.".to_string())?;
     materialize_chat_message_parts_from_media_refs(&mut messages, &state.data_path);
@@ -732,7 +732,7 @@ fn delete_unarchived_conversation(
     let mut data = read_app_data(&state.data_path)?;
     let before = data.conversations.len();
     data.conversations
-        .retain(|c| !(c.status == "active" && c.id == conversation_id));
+        .retain(|c| !(c.summary.trim().is_empty() && c.id == conversation_id));
     if data.conversations.len() == before {
         drop(guard);
         return Err("Unarchived conversation not found.".to_string());
@@ -905,4 +905,3 @@ fn rewind_conversation_from_message(
         recalled_user_message,
     })
 }
-
