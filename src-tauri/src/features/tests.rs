@@ -43,6 +43,8 @@
             last_assistant_at: None,
             last_context_usage_ratio: 0.0,
             status: "active".to_string(),
+            summary: String::new(),
+            archived_at: None,
             messages,
             memory_recall_table: Vec::new(),
         }

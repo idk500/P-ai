@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::collections::{HashMap as StdHashMap, HashSet as StdHashSet};
 
 const MEMORY_DB_FILE_NAME: &str = "memory_store.db";
+const LEGACY_APP_DATA_MEMORIES_MIGRATION_KEY: &str = "legacy_app_data_memories_migrated_v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,12 +61,131 @@ struct MemoryDraftInput {
     tags: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyMemoryJsonItem {
+    #[serde(default, alias = "memoryType")]
+    memory_type: String,
+    #[serde(default, alias = "content")]
+    judgment: String,
+    #[serde(default)]
+    reasoning: String,
+    #[serde(default, alias = "keywords")]
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyMemoryJsonPayload {
+    #[serde(default)]
+    memories: Vec<LegacyMemoryJsonItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryLegacyMigrationReport {
+    imported_count: usize,
+    created_count: usize,
+    merged_count: usize,
+    total_count: usize,
+    source_path: String,
+    archived_path: String,
+}
+
 fn memory_store_db_path(data_path: &PathBuf) -> PathBuf {
     let parent = data_path
         .parent()
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| PathBuf::from("."));
     parent.join(MEMORY_DB_FILE_NAME)
+}
+
+fn memory_store_legacy_app_data_migrated_path(data_path: &PathBuf) -> PathBuf {
+    let parent = data_path
+        .parent()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| PathBuf::from("."));
+    parent.join("app_data.memories.migrated.json")
+}
+
+fn memory_store_migrate_legacy_app_data_memories(
+    data_path: &PathBuf,
+) -> Result<Option<MemoryLegacyMigrationReport>, String> {
+    let conn = memory_store_open(data_path)?;
+    let migrated = memory_store_get_runtime_state(&conn, LEGACY_APP_DATA_MEMORIES_MIGRATION_KEY)?;
+    if migrated.as_deref() == Some("done") {
+        return Ok(None);
+    }
+
+    if !data_path.exists() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(data_path)
+        .map_err(|err| format!("Read app_data.json failed ({}): {err}", data_path.display()))?;
+    let payload: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("Parse app_data.json failed ({}): {err}", data_path.display()))?;
+    let Some(memories_value) = payload.get("memories").cloned() else {
+        return Ok(None);
+    };
+    let incoming = if memories_value.is_array() {
+        serde_json::from_value::<Vec<LegacyMemoryJsonItem>>(memories_value)
+            .map_err(|err| format!("Parse app_data.memories array failed: {err}"))?
+    } else {
+        serde_json::from_value::<LegacyMemoryJsonPayload>(memories_value)
+            .map(|p| p.memories)
+            .map_err(|err| format!("Parse app_data.memories payload failed: {err}"))?
+    };
+
+    let mut drafts = Vec::<MemoryDraftInput>::new();
+    for item in &incoming {
+        let judgment = clean_text(item.judgment.trim());
+        if judgment.is_empty() {
+            continue;
+        }
+        let tags = normalize_memory_keywords(&item.tags);
+        if tags.is_empty() {
+            continue;
+        }
+        let memory_type = memory_store_normalize_memory_type(&item.memory_type)?;
+        let reasoning = clean_text(item.reasoning.trim());
+        drafts.push(MemoryDraftInput {
+            memory_type,
+            judgment,
+            reasoning,
+            tags,
+        });
+    }
+
+    let before = memory_store_count(data_path)?;
+    let (results, total_count) = memory_store_upsert_drafts(data_path, &drafts)?;
+    let imported_count = drafts.len();
+    let created_count = total_count.saturating_sub(before);
+    let merged_count = results.iter().filter(|r| r.saved).count().saturating_sub(created_count);
+
+    let mut archived_path = memory_store_legacy_app_data_migrated_path(data_path);
+    if archived_path.exists() {
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        archived_path = archived_path.with_file_name(format!("app_data.memories.migrated.{now}.json"));
+    }
+    let archived_body = serde_json::to_string_pretty(&incoming)
+        .map_err(|err| format!("Serialize migrated memories snapshot failed: {err}"))?;
+    fs::write(&archived_path, archived_body).map_err(|err| {
+        format!(
+            "Write migrated memories snapshot failed ({}): {err}",
+            archived_path.display()
+        )
+    })?;
+
+    memory_store_set_runtime_state(&conn, LEGACY_APP_DATA_MEMORIES_MIGRATION_KEY, "done")?;
+    Ok(Some(MemoryLegacyMigrationReport {
+        imported_count,
+        created_count,
+        merged_count,
+        total_count,
+        source_path: data_path.to_string_lossy().to_string(),
+        archived_path: archived_path.to_string_lossy().to_string(),
+    }))
 }
 
 fn memory_store_normalize_provider_id(raw: &str) -> Result<String, String> {
@@ -1341,6 +1461,48 @@ mod memory_store_tests {
             unique.len() >= 2,
             "bm25 appears binary/discrete for this sample: {abs_scores:?}"
         );
+    }
+
+    #[test]
+    fn legacy_app_data_memories_should_migrate_once() {
+        let data_path = temp_data_path("legacy_app_data_memories_migration_once");
+        let parent = data_path.parent().expect("parent").to_path_buf();
+        let app_data_path = parent.join("app_data.json");
+        fs::write(
+            &app_data_path,
+            r#"{
+              "version": 1,
+              "agents": [],
+              "selectedAgentId": "default-agent",
+              "userAlias": "tester",
+              "responseStyleId": "concise",
+              "conversations": [],
+              "archivedConversations": [],
+              "imageTextCache": [],
+              "memories": [
+                {"memoryType":"knowledge","content":"用户偏好简洁回答","reasoning":"历史记忆","keywords":["偏好","简洁"]},
+                {"memoryType":"skill","judgment":"偏好 Rust","reasoning":"","tags":["rust","backend"]}
+              ]
+            }"#,
+        )
+        .expect("write legacy app_data.json");
+
+        let report = memory_store_migrate_legacy_app_data_memories(&data_path)
+            .expect("migrate legacy")
+            .expect("should migrate");
+        assert_eq!(report.imported_count, 2);
+        assert!(app_data_path.exists(), "app_data should be kept untouched");
+        assert!(
+            PathBuf::from(&report.archived_path).exists(),
+            "archived file should exist"
+        );
+
+        let memories = memory_store_list_memories(&data_path).expect("list memories");
+        assert_eq!(memories.len(), 2);
+
+        let report2 =
+            memory_store_migrate_legacy_app_data_memories(&data_path).expect("migrate again");
+        assert!(report2.is_none(), "migration should run only once");
     }
 
     #[test]

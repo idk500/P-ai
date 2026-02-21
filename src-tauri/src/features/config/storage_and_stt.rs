@@ -524,6 +524,43 @@ fn migrate_app_data_inline_media_to_refs(data_path: &PathBuf, data: &mut AppData
     changed
 }
 
+fn migrate_app_data_archives_into_conversations(data: &mut AppData) -> bool {
+    if data.archived_conversations.is_empty() {
+        return false;
+    }
+
+    for archive in data.archived_conversations.clone() {
+        let mut conv = archive.source_conversation;
+        if conv.id.trim().is_empty() {
+            conv.id = Uuid::new_v4().to_string();
+        }
+        if conv.summary.trim().is_empty() && !archive.summary.trim().is_empty() {
+            conv.summary = archive.summary.clone();
+        }
+        if conv.archived_at.as_deref().unwrap_or("").trim().is_empty() {
+            conv.archived_at = Some(archive.archived_at.clone());
+        }
+        if conv.status.trim() != "archived" {
+            conv.status = "archived".to_string();
+        }
+
+        if let Some(existing_idx) = data.conversations.iter().position(|c| c.id == conv.id) {
+            let should_replace = {
+                let existing = &data.conversations[existing_idx];
+                existing.summary.trim().is_empty() && !conv.summary.trim().is_empty()
+            };
+            if should_replace {
+                data.conversations[existing_idx] = conv;
+            }
+        } else {
+            data.conversations.push(conv);
+        }
+    }
+
+    data.archived_conversations.clear();
+    true
+}
+
 fn read_app_data(path: &PathBuf) -> Result<AppData, String> {
     if !path.exists() {
         return Ok(AppData::default());
@@ -536,8 +573,9 @@ fn read_app_data(path: &PathBuf) -> Result<AppData, String> {
     })?;
     parsed.version = APP_DATA_SCHEMA_VERSION;
     let defaults_changed = ensure_default_agent(&mut parsed);
+    let merged_archives = migrate_app_data_archives_into_conversations(&mut parsed);
     let migrated = migrate_app_data_inline_media_to_refs(path, &mut parsed);
-    if defaults_changed || migrated {
+    if defaults_changed || merged_archives || migrated {
         write_app_data(path, &parsed)?;
     }
     Ok(parsed)

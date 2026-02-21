@@ -117,6 +117,20 @@ fn main() {
             if let Err(err) = memory_store_open(&app_state.data_path) {
                 eprintln!("[BOOT] initialize memory store failed: {err}");
             }
+            match memory_store_migrate_legacy_app_data_memories(&app_state.data_path) {
+                Ok(Some(report)) => {
+                    eprintln!(
+                        "[BOOT] migrated legacy app_data memories: imported={}, created={}, merged={}, total={}, archived={}",
+                        report.imported_count,
+                        report.created_count,
+                        report.merged_count,
+                        report.total_count,
+                        report.archived_path
+                    );
+                }
+                Ok(None) => {}
+                Err(err) => eprintln!("[BOOT] migrate legacy app_data memories failed: {err}"),
+            }
             let avatar_path = data
                 .agents
                 .iter()

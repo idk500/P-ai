@@ -659,6 +659,10 @@ struct Conversation {
     #[serde(default)]
     last_context_usage_ratio: f64,
     status: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    archived_at: Option<String>,
     messages: Vec<ChatMessage>,
     #[serde(default)]
     memory_recall_table: Vec<String>,
@@ -723,6 +727,7 @@ struct AppData {
     #[serde(default = "default_response_style_id")]
     response_style_id: String,
     conversations: Vec<Conversation>,
+    #[serde(default, skip_serializing)]
     archived_conversations: Vec<ConversationArchive>,
     #[serde(default)]
     image_text_cache: Vec<ImageTextCacheEntry>,
