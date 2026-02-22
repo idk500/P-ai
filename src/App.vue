@@ -64,6 +64,8 @@
       :chat-workspace-locked="chatWorkspaceLocked"
       :user-avatar-url="userAvatarUrl"
       :selected-persona-avatar-url="selectedPersonaAvatarUrl"
+      :chat-persona-name-map="chatPersonaNameMap"
+      :chat-persona-avatar-url-map="chatPersonaAvatarUrlMap"
       :latest-user-text="latestUserText"
       :latest-user-images="latestUserImages"
       :latest-assistant-text="latestAssistantText"
@@ -644,6 +646,26 @@ const selectedPersonaAvatarUrl = computed(
 const selectedPersonaEditorAvatarUrl = computed(
   () => resolveAvatarUrl(selectedPersonaEditor.value?.avatarPath, selectedPersonaEditor.value?.avatarUpdatedAt),
 );
+const chatPersonaNameMap = computed<Record<string, string>>(() => {
+  const next: Record<string, string> = {};
+  for (const persona of personas.value) {
+    const id = String(persona.id || "").trim();
+    if (!id) continue;
+    const name = String(persona.name || "").trim();
+    next[id] = name || id;
+  }
+  return next;
+});
+const chatPersonaAvatarUrlMap = computed<Record<string, string>>(() => {
+  const next: Record<string, string> = {};
+  for (const persona of personas.value) {
+    const id = String(persona.id || "").trim();
+    if (!id) continue;
+    const url = resolveAvatarUrl(persona.avatarPath, persona.avatarUpdatedAt);
+    if (url) next[id] = url;
+  }
+  return next;
+});
 const selectedModelOptions = computed(() => {
   const id = config.selectedApiConfigId;
   if (!id) return [];

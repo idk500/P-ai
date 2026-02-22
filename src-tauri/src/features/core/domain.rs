@@ -706,6 +706,8 @@ struct ChatMessage {
     id: String,
     role: String,
     created_at: String,
+    #[serde(default)]
+    speaker_agent_id: Option<String>,
     parts: Vec<MessagePart>,
     #[serde(default)]
     extra_text_blocks: Vec<String>,
@@ -1088,6 +1090,28 @@ fn ensure_default_agent(data: &mut AppData) -> bool {
     if data.response_style_id != desired_style {
         data.response_style_id = desired_style;
         changed = true;
+    }
+    changed
+}
+
+fn fill_missing_message_speaker_agent_ids(data: &mut AppData) -> bool {
+    let mut changed = false;
+    for conversation in &mut data.conversations {
+        let host_agent_id = conversation.agent_id.trim().to_string();
+        if host_agent_id.is_empty() {
+            continue;
+        }
+        for message in &mut conversation.messages {
+            let current = message
+                .speaker_agent_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("");
+            if current.is_empty() {
+                message.speaker_agent_id = Some(host_agent_id.clone());
+                changed = true;
+            }
+        }
     }
     changed
 }

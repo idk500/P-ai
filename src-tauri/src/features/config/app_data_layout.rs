@@ -429,10 +429,12 @@ fn read_app_data(path: &PathBuf) -> Result<AppData, String> {
     };
     parsed.version = APP_DATA_SCHEMA_VERSION;
     let defaults_changed = ensure_default_agent(&mut parsed);
+    let message_speaker_filled = fill_missing_message_speaker_agent_ids(&mut parsed);
     let avatar_paths_migrated = migrate_agent_avatar_paths(path, &mut parsed);
     let merged_archives = migrate_app_data_archives_into_conversations(path, &mut parsed)?;
     let migrated = migrate_app_data_inline_media_to_refs(path, &mut parsed);
     if defaults_changed
+        || message_speaker_filled
         || avatar_paths_migrated
         || merged_archives
         || migrated

@@ -134,6 +134,7 @@ export type ChatMessage = {
   id: string;
   role: ChatRole;
   createdAt?: string;
+  speakerAgentId?: string;
   parts: MessagePart[];
   extraTextBlocks?: string[];
   providerMeta?: {
@@ -153,6 +154,7 @@ export type ChatSnapshot = {
 
 export type ChatTurn = {
   id: string;
+  assistantAgentId?: string;
   userText: string;
   userImages: Array<{ mime: string; bytesBase64: string }>;
   userAudios: Array<{ mime: string; bytesBase64: string }>;

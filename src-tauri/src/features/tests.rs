@@ -17,6 +17,7 @@
             id: Uuid::new_v4().to_string(),
             role: role.to_string(),
             created_at: created_at.to_string(),
+            speaker_agent_id: Some("agent".to_string()),
             parts: vec![MessagePart::Text {
                 text: text.to_string(),
             }],

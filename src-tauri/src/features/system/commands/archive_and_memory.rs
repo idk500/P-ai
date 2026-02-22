@@ -2024,6 +2024,7 @@ mod archive_host_selection_tests {
             id: Uuid::new_v4().to_string(),
             role: role.to_string(),
             created_at: now_iso(),
+            speaker_agent_id: Some("test-agent".to_string()),
             parts: vec![MessagePart::Text {
                 text: "x".to_string(),
             }],
