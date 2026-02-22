@@ -1651,10 +1651,23 @@ struct ArchiveMemoryDraft {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveMergeGroupDraft {
+    #[serde(default)]
+    source_ids: Vec<String>,
+    target: ArchiveMemoryDraft,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ArchiveSummaryDraft {
     summary: String,
     #[serde(default)]
-    memories: Vec<ArchiveMemoryDraft>,
+    useful_memory_ids: Vec<String>,
+    #[serde(default, alias = "memories")]
+    new_memories: Vec<ArchiveMemoryDraft>,
+    #[serde(default)]
+    merge_groups: Vec<ArchiveMergeGroupDraft>,
 }
 
 fn parse_archive_summary_draft(raw: &str) -> Option<ArchiveSummaryDraft> {
@@ -1673,11 +1686,11 @@ fn parse_archive_summary_draft(raw: &str) -> Option<ArchiveSummaryDraft> {
     serde_json::from_str::<ArchiveSummaryDraft>(&trimmed[start..=end]).ok()
 }
 
-fn merge_memories_into_store(
+fn upsert_memories_into_store_with_ids(
     data_path: &PathBuf,
     drafts: &[ArchiveMemoryDraft],
     owner_agent_id: Option<&str>,
-) -> Result<usize, String> {
+) -> Result<Vec<String>, String> {
     let mut inputs = Vec::<MemoryDraftInput>::new();
     for d in drafts {
         let judgment = clean_text(d.judgment.trim());
@@ -1699,7 +1712,78 @@ fn merge_memories_into_store(
                 .map(ToOwned::to_owned),
         });
     }
-    memory_store_merge_drafts(data_path, &inputs)
+    let (results, _) = memory_store_upsert_drafts(data_path, &inputs)?;
+    Ok(results.into_iter().filter_map(|r| r.id).collect::<Vec<_>>())
+}
+
+fn merge_memories_into_store(
+    data_path: &PathBuf,
+    drafts: &[ArchiveMemoryDraft],
+    owner_agent_id: Option<&str>,
+) -> Result<usize, String> {
+    Ok(upsert_memories_into_store_with_ids(data_path, drafts, owner_agent_id)?.len())
+}
+
+fn merge_memory_groups_into_store(
+    data_path: &PathBuf,
+    groups: &[ArchiveMergeGroupDraft],
+    owner_agent_id: Option<&str>,
+) -> Result<usize, String> {
+    let mut merged_groups = 0usize;
+    for group in groups {
+        let source_ids = group
+            .source_ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        if source_ids.len() < 2 {
+            continue;
+        }
+        let upserted_ids = upsert_memories_into_store_with_ids(
+            data_path,
+            &[group.target.clone()],
+            owner_agent_id,
+        )?;
+        let retained = upserted_ids
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<HashSet<_>>();
+        let mut deleted_any = false;
+        for source_id in source_ids {
+            if retained.contains(source_id.as_str()) {
+                continue;
+            }
+            if memory_store_delete_memory(data_path, &source_id).is_ok() {
+                deleted_any = true;
+            }
+        }
+        if deleted_any {
+            merged_groups += 1;
+        }
+    }
+    Ok(merged_groups)
+}
+
+fn archive_memory_id_catalog_text(memories: &[MemoryEntry], max_items: usize) -> String {
+    if memories.is_empty() || max_items == 0 {
+        return String::new();
+    }
+    let mut lines = Vec::<String>::new();
+    for memory in memories.iter().take(max_items) {
+        let tags = if memory.tags.is_empty() {
+            "无".to_string()
+        } else {
+            memory.tags.join(" ")
+        };
+        let snippet = memory.judgment.chars().take(80).collect::<String>();
+        lines.push(format!(
+            "- id={} | tags={} | judgment={}",
+            memory.id, tags, snippet
+        ));
+    }
+    lines.join("\n")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1715,52 +1799,21 @@ struct ForceArchiveResult {
     reason_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     elapsed_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_feedback: Option<MemoryArchiveFeedbackReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    merge_groups: Option<usize>,
 }
 
-fn build_force_archive_fallback_summary(source_conversation: &Conversation) -> String {
-    let total = source_conversation.messages.len();
-    let user_count = source_conversation
-        .messages
-        .iter()
-        .filter(|m| m.role == "user")
-        .count();
-    let assistant_count = source_conversation
-        .messages
-        .iter()
-        .filter(|m| m.role == "assistant")
-        .count();
-    let latest_user_focus = source_conversation
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "user")
-        .map(archive_message_plain_text)
-        .map(|text| clean_text(text.trim()))
-        .filter(|text| !text.is_empty())
-        .map(|text| {
-            let head = text.chars().take(120).collect::<String>();
-            if text.chars().count() > 120 {
-                format!("{head}...")
-            } else {
-                head
-            }
-        })
-        .unwrap_or_else(|| "无".to_string());
-
-    format!(
-        "本次对话已归档（降级总结）。总消息 {} 条（用户 {} / 助手 {}）。最近用户关注：{}。",
-        total, user_count, assistant_count, latest_user_focus
-    )
-}
-
-async fn summarize_archived_conversation_with_model(
+async fn summarize_archived_conversation_with_model_v2(
     resolved_api: &ResolvedApiConfig,
     selected_api: &ApiConfig,
     agent: &AgentProfile,
     user_alias: &str,
     source_conversation: &Conversation,
     memories: &[MemoryEntry],
-) -> Result<(String, Vec<ArchiveMemoryDraft>), String> {
+    recall_table: &[String],
+) -> Result<ArchiveSummaryDraft, String> {
     let mut transcript = String::new();
     for msg in &source_conversation.messages {
         transcript.push_str(&render_message_for_context(msg));
@@ -1771,6 +1824,24 @@ async fn summarize_archived_conversation_with_model(
     let extra_memory = memory_board_xml
         .map(|xml| format!("\n\n[MEMORY BOARD]\n{xml}"))
         .unwrap_or_default();
+    let memory_id_catalog = archive_memory_id_catalog_text(memories, 64);
+    let recall_id_catalog = recall_table
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .take(64)
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let recall_text = if recall_id_catalog.is_empty() {
+        "无".to_string()
+    } else {
+        recall_id_catalog.join(", ")
+    };
+    let id_catalog_text = if memory_id_catalog.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n[MEMORY ID CATALOG]\n{memory_id_catalog}")
+    };
 
     let summary_tool_rules = if selected_api.enable_tools && tool_enabled(selected_api, "memory-save")
     {
@@ -1781,14 +1852,16 @@ async fn summarize_archived_conversation_with_model(
 
     let instruction = format!(
         "你要做归档总结。输出严格 JSON，不要 markdown，不要代码块。\n\
-         JSON schema: {{\"summary\":\"string\",\"memories\":[{{\"memoryType\":\"knowledge|skill|emotion|event\",\"judgment\":\"string\",\"reasoning\":\"string\",\"tags\":[\"string\"]}}]}}\n\
+         JSON schema: {{\"summary\":\"string\",\"usefulMemoryIds\":[\"string\"],\"newMemories\":[{{\"memoryType\":\"knowledge|skill|emotion|event\",\"judgment\":\"string\",\"reasoning\":\"string\",\"tags\":[\"string\"]}}],\"mergeGroups\":[{{\"sourceIds\":[\"string\",\"string\"],\"target\":{{\"memoryType\":\"knowledge|skill|emotion|event\",\"judgment\":\"string\",\"reasoning\":\"string\",\"tags\":[\"string\"]}}}}]}}\n\
          规则:\n\
          1) summary 必填，必须按时间顺序写，语言自然、具体，不要模板化空话。\n\
          2) summary 必须覆盖并按此顺序组织：论题（讨论了什么）-> 经过（关键分歧/变化）-> 结论（已决定事项）。\n\
          3) summary 必须单独明确两部分：悬而未定的论题；接下来建议决策（给出可执行的下一步）。\n\
          4) 如有多个论题，必须逐个输出（按时间先后分别写清每个论题的经过与结论），禁止合并成笼统描述。\n\
          5) summary 必须保留可追溯锚点：关键对象、关键时间点、关键数字或约束条件；不确定就写“待确认”，禁止猜测。\n\
-         6) memories 最多 7 条；非必要不生成；memoryType 只能是 knowledge/skill/emotion/event（禁止 task）。\n\
+         6) newMemories 最多 7 条；非必要不生成；memoryType 只能是 knowledge/skill/emotion/event（禁止 task）。\n\
+         7) usefulMemoryIds 只能从 [RECALL ID CATALOG] 里选。\n\
+         8) mergeGroups.sourceIds 只能从 [MEMORY ID CATALOG] 里选，且每组至少 2 个。\n\
          7) 不要记录高风险敏感信息（密码、密钥、身份证、银行卡等）。\n\
          8) 你是 {assistant_name}，用户称谓是 {user_name}。\n\
          9) {tool_rules}",
@@ -1801,9 +1874,11 @@ async fn summarize_archived_conversation_with_model(
         preamble: format!("[ARCHIVE TASK]\n{instruction}"),
         history_messages: Vec::new(),
         latest_user_text: format!(
-            "[CONVERSATION]\n{}\n{}",
+            "[CONVERSATION]\n{}\n{}\n\n[RECALL ID CATALOG]\n{}\n{}",
             transcript.trim(),
-            extra_memory.trim()
+            extra_memory.trim(),
+            recall_text,
+            id_catalog_text.trim()
         ),
         latest_user_time_text: String::new(),
         latest_user_system_text: String::new(),
@@ -1847,8 +1922,181 @@ async fn summarize_archived_conversation_with_model(
     if summary.is_empty() {
         return Err("Archive summary is empty".to_string());
     }
-    let memories = parsed.memories.into_iter().take(7).collect::<Vec<_>>();
-    Ok((summary, memories))
+    Ok(ArchiveSummaryDraft {
+        summary,
+        useful_memory_ids: parsed
+            .useful_memory_ids
+            .into_iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect::<Vec<_>>(),
+        new_memories: parsed.new_memories.into_iter().take(7).collect::<Vec<_>>(),
+        merge_groups: parsed.merge_groups.into_iter().take(7).collect::<Vec<_>>(),
+    })
+}
+
+fn archive_message_agent_hint(message: &ChatMessage) -> Option<String> {
+    let meta = message.provider_meta.as_ref()?;
+    let obj = meta.as_object()?;
+    for key in ["agentId", "agent_id", "speakerAgentId", "speaker_agent_id"] {
+        let value = obj.get(key).and_then(Value::as_str).unwrap_or("").trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn choose_archive_host_agent_id(data: &AppData, source: &Conversation, fallback_agent_id: &str) -> String {
+    let mut count_map = HashMap::<String, usize>::new();
+    let mut last_idx_map = HashMap::<String, usize>::new();
+    for (idx, message) in source.messages.iter().enumerate() {
+        let hint = archive_message_agent_hint(message)
+            .or_else(|| {
+                if message.role == "assistant" {
+                    Some(source.agent_id.clone())
+                } else {
+                    None
+                }
+            });
+        let Some(agent_id) = hint else {
+            continue;
+        };
+        *count_map.entry(agent_id.clone()).or_insert(0) += 1;
+        last_idx_map.insert(agent_id, idx);
+    }
+
+    let public_agents = data
+        .agents
+        .iter()
+        .filter(|a| !a.is_built_in_user && !a.private_memory_enabled)
+        .map(|a| a.id.clone())
+        .collect::<Vec<_>>();
+    if !public_agents.is_empty() {
+        return public_agents
+            .into_iter()
+            .max_by(|a, b| {
+                let ac = count_map.get(a).copied().unwrap_or(0);
+                let bc = count_map.get(b).copied().unwrap_or(0);
+                ac.cmp(&bc)
+                    .then_with(|| {
+                        let ai = last_idx_map.get(a).copied().unwrap_or(0);
+                        let bi = last_idx_map.get(b).copied().unwrap_or(0);
+                        ai.cmp(&bi)
+                    })
+                    .then_with(|| b.cmp(a))
+            })
+            .unwrap_or_else(|| source.agent_id.clone());
+    }
+
+    let fallback = fallback_agent_id.trim();
+    if !fallback.is_empty()
+        && data
+            .agents
+            .iter()
+            .any(|a| !a.is_built_in_user && a.id == fallback)
+    {
+        return fallback.to_string();
+    }
+    source.agent_id.clone()
+}
+
+#[cfg(test)]
+mod archive_host_selection_tests {
+    use super::*;
+
+    fn mk_agent(id: &str, private_memory_enabled: bool) -> AgentProfile {
+        AgentProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            system_prompt: String::new(),
+            created_at: now_iso(),
+            updated_at: now_iso(),
+            avatar_path: None,
+            avatar_updated_at: None,
+            is_built_in_user: false,
+            private_memory_enabled,
+        }
+    }
+
+    fn mk_msg(role: &str) -> ChatMessage {
+        ChatMessage {
+            id: Uuid::new_v4().to_string(),
+            role: role.to_string(),
+            created_at: now_iso(),
+            parts: vec![MessagePart::Text {
+                text: "x".to_string(),
+            }],
+            extra_text_blocks: Vec::new(),
+            provider_meta: None,
+            tool_call: None,
+            mcp_call: None,
+        }
+    }
+
+    #[test]
+    fn host_should_choose_public_agent_with_most_messages() {
+        let data = AppData {
+            version: APP_DATA_SCHEMA_VERSION,
+            agents: vec![mk_agent("pub-a", false), mk_agent("pub-b", false)],
+            selected_agent_id: "pub-b".to_string(),
+            user_alias: "u".to_string(),
+            response_style_id: "concise".to_string(),
+            conversations: Vec::new(),
+            archived_conversations: Vec::new(),
+            image_text_cache: Vec::new(),
+        };
+        let source = Conversation {
+            id: "c1".to_string(),
+            title: "t".to_string(),
+            api_config_id: "api".to_string(),
+            agent_id: "pub-a".to_string(),
+            created_at: now_iso(),
+            updated_at: now_iso(),
+            last_user_at: None,
+            last_assistant_at: None,
+            last_context_usage_ratio: 0.0,
+            status: "active".to_string(),
+            summary: String::new(),
+            archived_at: None,
+            messages: vec![mk_msg("assistant"), mk_msg("assistant"), mk_msg("assistant")],
+            memory_recall_table: Vec::new(),
+        };
+        let host = choose_archive_host_agent_id(&data, &source, "pub-b");
+        assert_eq!(host, "pub-a");
+    }
+
+    #[test]
+    fn host_should_fallback_to_selected_when_all_private() {
+        let data = AppData {
+            version: APP_DATA_SCHEMA_VERSION,
+            agents: vec![mk_agent("p1", true), mk_agent("p2", true)],
+            selected_agent_id: "p2".to_string(),
+            user_alias: "u".to_string(),
+            response_style_id: "concise".to_string(),
+            conversations: Vec::new(),
+            archived_conversations: Vec::new(),
+            image_text_cache: Vec::new(),
+        };
+        let source = Conversation {
+            id: "c1".to_string(),
+            title: "t".to_string(),
+            api_config_id: "api".to_string(),
+            agent_id: "p1".to_string(),
+            created_at: now_iso(),
+            updated_at: now_iso(),
+            last_user_at: None,
+            last_assistant_at: None,
+            last_context_usage_ratio: 0.0,
+            status: "active".to_string(),
+            summary: String::new(),
+            archived_at: None,
+            messages: vec![mk_msg("assistant")],
+            memory_recall_table: Vec::new(),
+        };
+        let host = choose_archive_host_agent_id(&data, &source, "p2");
+        assert_eq!(host, "p2");
+    }
 }
 
 #[tauri::command]
@@ -1856,9 +2104,7 @@ async fn force_archive_current(
     input: SessionSelector,
     state: State<'_, AppState>,
 ) -> Result<ForceArchiveResult, String> {
-    let started_at = std::time::Instant::now();
-    let trace_id = Uuid::new_v4().to_string();
-    let (selected_api, resolved_api, source, agent, user_alias, memories) = {
+    let (selected_api, resolved_api, source, effective_agent_id) = {
         let guard = state
             .state_lock
             .lock()
@@ -1889,24 +2135,6 @@ async fn force_archive_current(
                 .map(|a| a.id.clone())
                 .ok_or_else(|| "Selected agent not found.".to_string())?
         };
-        let agent = data
-            .agents
-            .iter()
-            .find(|a| a.id == effective_agent_id)
-            .cloned()
-            .ok_or_else(|| "Selected agent not found.".to_string())?;
-        let user_alias = data.user_alias.clone();
-        let private_memory_enabled = data
-            .agents
-            .iter()
-            .find(|a| a.id == effective_agent_id)
-            .map(|a| a.private_memory_enabled)
-            .unwrap_or(false);
-        let memories = memory_store_list_memories_visible_for_agent(
-            &state.data_path,
-            &effective_agent_id,
-            private_memory_enabled,
-        )?;
         let source_idx = latest_active_conversation_index(&data, &selected_api.id, &effective_agent_id)
             .ok_or_else(|| "当前没有可归档的活动对话。".to_string())?;
         let source = data
@@ -1915,12 +2143,32 @@ async fn force_archive_current(
             .cloned()
             .ok_or_else(|| "当前没有可归档的活动对话。".to_string())?;
         drop(guard);
-        (selected_api, resolved_api, source, agent, user_alias, memories)
+        (selected_api, resolved_api, source, effective_agent_id)
     };
-    eprintln!(
-        "[ARCHIVE-FORCE] trace={} begin api={} model={} format={} conversation={}",
-        trace_id, selected_api.id, selected_api.model, resolved_api.request_format, source.id
-    );
+
+    run_archive_pipeline(
+        &state,
+        &selected_api,
+        &resolved_api,
+        &source,
+        &effective_agent_id,
+        "manual_force_archive",
+        "ARCHIVE-FORCE",
+    )
+    .await
+}
+
+pub(crate) async fn run_archive_pipeline(
+    state: &AppState,
+    selected_api: &ApiConfig,
+    resolved_api: &ResolvedApiConfig,
+    source: &Conversation,
+    effective_agent_id: &str,
+    archive_reason: &str,
+    trace_tag: &str,
+) -> Result<ForceArchiveResult, String> {
+    let started_at = std::time::Instant::now();
+    let trace_id = Uuid::new_v4().to_string();
 
     if source.messages.is_empty() {
         return Ok(ForceArchiveResult {
@@ -1931,38 +2179,62 @@ async fn force_archive_current(
             warning: None,
             reason_code: Some("empty_conversation".to_string()),
             elapsed_ms: Some(started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
+            memory_feedback: None,
+            merge_groups: None,
         });
     }
 
-    let (summary, summary_memories, warning, reason_code) = match summarize_archived_conversation_with_model(
-        &resolved_api,
-        &selected_api,
-        &agent,
-        &user_alias,
-        &source,
-        &memories,
-    )
-    .await {
-        Ok((summary, summary_memories)) => (summary, summary_memories, None, None),
-        Err(err) => {
-            let fallback_summary = build_force_archive_fallback_summary(&source);
-            let reason = if err.to_ascii_lowercase().contains("timed out") {
-                "summary_timeout"
-            } else {
-                "summary_failed"
-            };
-            eprintln!(
-                "[ARCHIVE-FORCE] trace={} summary degraded reason={} err={}",
-                trace_id, reason, err
-            );
-            (
-                fallback_summary,
-                Vec::new(),
-                Some("归档总结生成失败，已使用本地降级摘要。".to_string()),
-                Some(reason.to_string()),
-            )
-        }
+    let (host_agent, host_agent_id, user_alias, memories) = {
+        let guard = state
+            .state_lock
+            .lock()
+            .map_err(|_| "Failed to lock state mutex".to_string())?;
+        let mut data = read_app_data(&state.data_path)?;
+        ensure_default_agent(&mut data);
+        let user_alias = data.user_alias.clone();
+        let host_agent_id = choose_archive_host_agent_id(&data, source, effective_agent_id);
+        let host_agent = data
+            .agents
+            .iter()
+            .find(|a| a.id == host_agent_id)
+            .cloned()
+            .ok_or_else(|| "Host agent not found.".to_string())?;
+        let host_private_memory_enabled = host_agent.private_memory_enabled;
+        drop(guard);
+        let memories = memory_store_list_memories_visible_for_agent(
+            &state.data_path,
+            &host_agent_id,
+            host_private_memory_enabled,
+        )?;
+        (host_agent, host_agent_id, user_alias, memories)
     };
+
+    eprintln!(
+        "[{}] trace={} begin api={} model={} format={} conversation={} hostAgent={}",
+        trace_tag,
+        trace_id,
+        selected_api.id,
+        selected_api.model,
+        resolved_api.request_format,
+        source.id,
+        host_agent_id
+    );
+
+    let parsed = summarize_archived_conversation_with_model_v2(
+        resolved_api,
+        selected_api,
+        &host_agent,
+        &user_alias,
+        source,
+        &memories,
+        &source.memory_recall_table,
+    )
+    .await?;
+
+    let summary = parsed.summary;
+    let useful_memory_ids = parsed.useful_memory_ids;
+    let summary_memories = parsed.new_memories;
+    let merge_groups = parsed.merge_groups;
 
     let guard = state
         .state_lock
@@ -1970,39 +2242,44 @@ async fn force_archive_current(
         .map_err(|_| "Failed to lock state mutex".to_string())?;
     let mut data = read_app_data(&state.data_path)?;
     ensure_default_agent(&mut data);
-    let archive_id = archive_conversation_now(&mut data, &source.id, "manual_force_archive", &summary);
-    if archive_id.is_none() {
-        drop(guard);
-        return Err("活动对话已变化，请重试强制归档。".to_string());
-    }
-    let _ = ensure_active_conversation_index(
-        &mut data,
-        &selected_api.id,
-        &source.agent_id,
-    );
+    let archive_id = archive_conversation_now(&mut data, &source.id, archive_reason, &summary)
+        .ok_or_else(|| "活动对话已变化，请重试归档。".to_string())?;
+    let _ = ensure_active_conversation_index(&mut data, &selected_api.id, &source.agent_id);
     let owner_agent_id = data
         .agents
         .iter()
-        .find(|a| a.id == source.agent_id && !a.is_built_in_user && a.private_memory_enabled)
+        .find(|a| a.id == host_agent_id && !a.is_built_in_user && a.private_memory_enabled)
         .map(|a| a.id.as_str());
+    let memory_feedback = memory_store_apply_archive_feedback(
+        &state.data_path,
+        &source.memory_recall_table,
+        &useful_memory_ids,
+    )?;
     let merged_memories = merge_memories_into_store(&state.data_path, &summary_memories, owner_agent_id)?;
+    let merged_groups = merge_memory_groups_into_store(&state.data_path, &merge_groups, owner_agent_id)?;
     write_app_data(&state.data_path, &data)?;
     drop(guard);
+
     eprintln!(
-        "[ARCHIVE-FORCE] trace={} done archived={} merged_memories={} warning={}",
+        "[{}] trace={} done archived=true merged_memories={} merged_groups={} useful_accept={} penalized={} natural_decay={}",
+        trace_tag,
         trace_id,
-        archive_id.is_some(),
         merged_memories,
-        warning.is_some()
+        merged_groups,
+        memory_feedback.useful_accepted_count,
+        memory_feedback.penalized_count,
+        memory_feedback.natural_decay_count,
     );
 
     Ok(ForceArchiveResult {
         archived: true,
-        archive_id,
+        archive_id: Some(archive_id),
         summary,
         merged_memories,
-        warning,
-        reason_code,
+        warning: None,
+        reason_code: None,
         elapsed_ms: Some(started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
+        memory_feedback: Some(memory_feedback),
+        merge_groups: Some(merged_groups),
     })
 }

@@ -269,164 +269,42 @@ async fn send_chat_message(
             });
         }
 
-        let (summary_result, summary_memories) = {
-            let guard = state
-                .state_lock
-                .lock()
-                .map_err(|_| "Failed to lock state mutex".to_string())?;
-            let mut data = read_app_data(&state.data_path)?;
-            ensure_default_agent(&mut data);
-            let agent = data
-                .agents
-                .iter()
-                .find(|a| a.id == effective_agent_id)
-                .cloned()
-                .ok_or_else(|| "Selected agent not found.".to_string())?;
-            let user_alias = data.user_alias.clone();
-            let private_memory_enabled = data
-                .agents
-                .iter()
-                .find(|a| a.id == effective_agent_id)
-                .map(|a| a.private_memory_enabled)
-                .unwrap_or(false);
-            let memories = memory_store_list_memories_visible_for_agent(
-                &state.data_path,
-                &effective_agent_id,
-                private_memory_enabled,
-            )?;
-            drop(guard);
+        let archive_res = run_archive_pipeline(
+            &state,
+            &selected_api,
+            &resolved_api,
+            &source,
+            &effective_agent_id,
+            &pending_archive_reason,
+            "ARCHIVE-AUTO",
+        )
+        .await;
 
-            match summarize_archived_conversation_with_model(
-                &resolved_api,
-                &selected_api,
-                &agent,
-                &user_alias,
-                &source,
-                &memories,
-            )
-            .await
-            {
-                Ok((summary, drafts)) => (Ok(summary), drafts),
-                Err(err) => (Err(err), Vec::new()),
-            }
-        };
-
-        let guard = state
-            .state_lock
-            .lock()
-            .map_err(|_| "Failed to lock state mutex".to_string())?;
-        let mut data = read_app_data(&state.data_path)?;
-        ensure_default_agent(&mut data);
-
-        match summary_result {
-            Ok(summary) => {
-                if archive_conversation_now(
-                    &mut data,
-                    &source.id,
-                    &pending_archive_reason,
-                    &summary,
-                )
-                .is_some()
-                {
-                    let _ = ensure_active_conversation_index(
-                        &mut data,
-                        &selected_api.id,
-                        &effective_agent_id,
-                    );
-                    let owner_agent_id = data
-                        .agents
-                        .iter()
-                        .find(|a| a.id == source.agent_id && !a.is_built_in_user && a.private_memory_enabled)
-                        .map(|a| a.id.as_str());
-                    let memory_merged =
-                        merge_memories_into_store(&state.data_path, &summary_memories, owner_agent_id)?;
-                    eprintln!(
-                        "[ARCHIVE] archived ok. conversation_id={}, reason={}, summary_len={}, merged_memories={}",
-                        source.id,
-                        pending_archive_reason,
-                        summary.chars().count(),
-                        memory_merged
-                    );
-                    archived_before_send = true;
+        match archive_res {
+            Ok(result) => {
+                archived_before_send = result.archived;
+                if pending_archive_forced {
+                    let _ = on_delta.send(AssistantDeltaEvent {
+                        delta: "".to_string(),
+                        kind: Some("tool_status".to_string()),
+                        tool_name: Some("archive".to_string()),
+                        tool_status: Some("done".to_string()),
+                        message: Some("归档完成，已开启新对话。".to_string()),
+                    });
                 }
             }
             Err(err) => {
-                eprintln!(
-                    "[ARCHIVE] summary failed, fallback to recent turns. conversation_id={}, err={}",
-                    source.id, err
-                );
-                if let Some(conv) = data
-                    .conversations
-                    .iter_mut()
-                    .find(|c| c.id == source.id && c.summary.trim().is_empty())
-                {
-                    let fallback_messages = keep_recent_turns(&source.messages, 3);
-                    conv.messages = fallback_messages.clone();
-                    let mut tmp = conv.clone();
-                    tmp.messages = fallback_messages.clone();
-                    let usage_after = compute_context_usage_ratio(&tmp, selected_api.context_window_tokens);
-                    if usage_after >= 0.82 {
-                        let now = now_iso();
-                        conv.id = Uuid::new_v4().to_string();
-                        conv.title = format!("Chat {}", &now.chars().take(16).collect::<String>());
-                        conv.created_at = now.clone();
-                        conv.updated_at = now;
-                        conv.messages.clear();
-                        conv.last_user_at = None;
-                        conv.last_assistant_at = None;
-                        conv.last_context_usage_ratio = 0.0;
-                        write_app_data(&state.data_path, &data)?;
-                        drop(guard);
-                        if pending_archive_forced {
-                            let _ = on_delta.send(AssistantDeltaEvent {
-                                delta: "".to_string(),
-                                kind: Some("tool_status".to_string()),
-                                tool_name: Some("archive".to_string()),
-                                tool_status: Some("failed".to_string()),
-                                message: Some("归档失败且回退仍超限，已开启新对话。".to_string()),
-                            });
-                        }
-                        return Err("归档失败且上下文仍超限，已自动开启新对话，请重新发送消息。".to_string());
-                    }
-                    conv.last_user_at = conv
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|m| m.role == "user")
-                        .map(|m| m.created_at.clone());
-                    conv.last_assistant_at = conv
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|m| m.role == "assistant")
-                        .map(|m| m.created_at.clone());
-                    conv.updated_at = now_iso();
-                    conv.last_context_usage_ratio = if conv.messages.is_empty() {
-                        0.0
-                    } else {
-                        compute_context_usage_ratio(conv, selected_api.context_window_tokens)
-                    };
+                if pending_archive_forced {
+                    let _ = on_delta.send(AssistantDeltaEvent {
+                        delta: "".to_string(),
+                        kind: Some("tool_status".to_string()),
+                        tool_name: Some("archive".to_string()),
+                        tool_status: Some("failed".to_string()),
+                        message: Some(format!("归档失败：{err}")),
+                    });
                 }
+                return Err(format!("归档失败：{err}"));
             }
-        }
-
-        write_app_data(&state.data_path, &data)?;
-        drop(guard);
-
-        if pending_archive_forced {
-            let status = if archived_before_send { "done" } else { "failed" };
-            let message = if archived_before_send {
-                "归档完成，已优化上下文。"
-            } else {
-                "归档失败，已自动回退为最近三轮或新对话。"
-            };
-            let _ = on_delta.send(AssistantDeltaEvent {
-                delta: "".to_string(),
-                kind: Some("tool_status".to_string()),
-                tool_name: Some("archive".to_string()),
-                tool_status: Some(status.to_string()),
-                message: Some(message.to_string()),
-            });
         }
     }
 
