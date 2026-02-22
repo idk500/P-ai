@@ -43,6 +43,7 @@
             stt_api_config_id: None,
             stt_auto_send: false,
             shell_workspaces: Vec::new(),
+            mcp_servers: Vec::new(),
             api_configs: vec![
                 ApiConfig {
                     id: "a1".to_string(),
@@ -99,6 +100,7 @@
             stt_api_config_id: None,
             stt_auto_send: false,
             shell_workspaces: Vec::new(),
+            mcp_servers: Vec::new(),
             api_configs: vec![
                 ApiConfig {
                     id: "chat-a".to_string(),
@@ -152,6 +154,7 @@
             stt_api_config_id: Some("tts-a".to_string()),
             stt_auto_send: true,
             shell_workspaces: Vec::new(),
+            mcp_servers: Vec::new(),
             api_configs: vec![ApiConfig {
                 id: "tts-a".to_string(),
                 name: "tts-a".to_string(),

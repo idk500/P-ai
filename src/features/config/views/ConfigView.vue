@@ -12,6 +12,9 @@
           <a :class="{ 'active': configTab === 'tools', 'opacity-50 pointer-events-none': memorySyncLocked }" @click="requestTabChange('tools')">{{ t("config.tabs.tools") }}</a>
         </li>
         <li>
+          <a :class="{ 'active': configTab === 'mcp', 'opacity-50 pointer-events-none': memorySyncLocked }" @click="requestTabChange('mcp')">MCP</a>
+        </li>
+        <li>
           <a :class="{ 'active': configTab === 'persona', 'opacity-50 pointer-events-none': memorySyncLocked }" @click="requestTabChange('persona')">{{ t("config.tabs.persona") }}</a>
         </li>
         <li>
@@ -71,6 +74,9 @@
           @tool-switch-changed="$emit('toolSwitchChanged')"
           @save-api-config="$emit('saveApiConfig')"
           @open-memory-viewer="$emit('update:configTab', 'memory')"
+        />
+        <McpTab
+          v-else-if="configTab === 'mcp'"
         />
 
         <PersonaTab
@@ -197,13 +203,14 @@ import Cropper from "cropperjs";
 import HotkeyTab from "./config-tabs/HotkeyTab.vue";
 import ApiTab from "./config-tabs/ApiTab.vue";
 import ToolsTab from "./config-tabs/ToolsTab.vue";
+import McpTab from "./config-tabs/McpTab.vue";
 import PersonaTab from "./config-tabs/PersonaTab.vue";
 import ChatSettingsTab from "./config-tabs/ChatSettingsTab.vue";
 import MemoryTab from "./config-tabs/MemoryTab.vue";
 import AppearanceTab from "./config-tabs/AppearanceTab.vue";
 import AboutTab from "./config-tabs/AboutTab.vue";
 
-type ConfigTab = "hotkey" | "api" | "tools" | "persona" | "chatSettings" | "memory" | "appearance" | "about";
+type ConfigTab = "hotkey" | "api" | "tools" | "mcp" | "persona" | "chatSettings" | "memory" | "appearance" | "about";
 type AvatarTarget = { agentId: string };
 
 const props = defineProps<{

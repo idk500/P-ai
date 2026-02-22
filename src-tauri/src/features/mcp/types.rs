@@ -1,0 +1,100 @@
+use serde::{Deserialize as SerdeDeserialize, Serialize as SerdeSerialize};
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    SerdeSerialize,
+    SerdeDeserialize,
+)]
+enum McpTransportKind {
+    Stdio,
+    StreamableHttp,
+}
+
+impl McpTransportKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdio => "stdio",
+            Self::StreamableHttp => "streamable_http",
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct ParsedMcpServerDefinition {
+    transport: McpTransportKind,
+    command: Option<String>,
+    args: Vec<String>,
+    env: std::collections::HashMap<String, String>,
+    cwd: Option<String>,
+    url: Option<String>,
+    bearer_token_env_var: Option<String>,
+    http_headers: std::collections::HashMap<String, String>,
+    env_http_headers: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerInput {
+    id: String,
+    name: String,
+    enabled: bool,
+    definition_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerIdInput {
+    server_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpDefinitionValidateInput {
+    definition_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpDefinitionValidateResult {
+    ok: bool,
+    transport: Option<String>,
+    server_name: Option<String>,
+    message: String,
+    #[serde(default)]
+    schema_version: Option<String>,
+    #[serde(default)]
+    error_code: Option<String>,
+    #[serde(default)]
+    details: Vec<String>,
+    #[serde(default)]
+    migrated_definition_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpToolDescriptor {
+    tool_name: String,
+    description: String,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpListServerToolsResult {
+    server_id: String,
+    tools: Vec<McpToolDescriptor>,
+    elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpSetToolEnabledInput {
+    server_id: String,
+    tool_name: String,
+    enabled: bool,
+}

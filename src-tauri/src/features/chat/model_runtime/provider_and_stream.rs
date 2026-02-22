@@ -1341,6 +1341,13 @@ async fn call_model_openai_with_tools(
             })?;
         _mcp_screenshot_client = Some(client);
     }
+    let _dynamic_mcp_clients = match attach_enabled_mcp_tools_for_runtime(&mut tools, app_state).await {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("[MCP] attach runtime tools skipped: {err}");
+            Vec::new()
+        }
+    };
     if has_desktop_wait {
         tools.push(Box::new(BuiltinDesktopWaitTool));
     }
@@ -1770,6 +1777,13 @@ async fn call_model_gemini_with_tools(
             })?;
         _mcp_screenshot_client = Some(client);
     }
+    let _dynamic_mcp_clients = match attach_enabled_mcp_tools_for_runtime(&mut tools, app_state).await {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("[MCP] attach runtime tools skipped: {err}");
+            Vec::new()
+        }
+    };
     if has_desktop_wait {
         tools.push(Box::new(BuiltinDesktopWaitTool));
     }
@@ -2117,6 +2131,13 @@ async fn call_model_anthropic_with_tools(
             })?;
         _mcp_screenshot_client = Some(client);
     }
+    let _dynamic_mcp_clients = match attach_enabled_mcp_tools_for_runtime(&mut tools, app_state).await {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("[MCP] attach runtime tools skipped: {err}");
+            Vec::new()
+        }
+    };
     if has_desktop_wait {
         tools.push(Box::new(BuiltinDesktopWaitTool));
     }
