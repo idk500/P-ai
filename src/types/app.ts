@@ -33,6 +33,12 @@ export type ApiConfigItem = {
   contextWindowTokens: number;
 };
 
+export type ShellWorkspace = {
+  name: string;
+  path: string;
+  builtIn?: boolean;
+};
+
 export type AppConfig = {
   hotkey: string;
   uiLanguage: "zh-CN" | "en-US" | "ja-JP" | "ko-KR";
@@ -46,7 +52,7 @@ export type AppConfig = {
   visionApiConfigId?: string;
   sttApiConfigId?: string;
   sttAutoSend?: boolean;
-  terminalProjectRoots: string[];
+  shellWorkspaces: ShellWorkspace[];
   apiConfigs: ApiConfigItem[];
 };
 

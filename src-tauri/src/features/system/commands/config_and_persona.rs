@@ -101,6 +101,7 @@ fn load_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
         .map_err(|_| "Failed to lock state mutex".to_string())?;
     let mut result = read_config(&state.config_path)?;
     normalize_app_config(&mut result);
+    ensure_default_shell_workspace_in_config(&mut result, &state);
     drop(guard);
     Ok(result)
 }
@@ -116,6 +117,7 @@ fn save_config(
     }
     let mut config = config;
     normalize_app_config(&mut config);
+    ensure_default_shell_workspace_in_config(&mut config, &state);
 
     let guard = state
         .state_lock

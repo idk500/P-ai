@@ -1,4 +1,4 @@
-#[tauri::command]
+﻿#[tauri::command]
 async fn desktop_screenshot(input: ScreenshotRequest) -> Result<ScreenshotResponse, String> {
     run_screenshot_tool(input)
         .await
@@ -112,3 +112,4 @@ fn resolve_terminal_approval(
     let _ = resolve_terminal_approval_request(&state, &input.request_id, input.approved)?;
     Ok(())
 }
+

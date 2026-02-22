@@ -29,11 +29,11 @@ export function useConfigCore(options: UseConfigCoreOptions) {
     { id: "memory-save", command: "builtin", args: ["memory-save"], enabled: true, values: {} },
     { id: "desktop-screenshot", command: "builtin", args: ["desktop-screenshot"], enabled: false, values: {} },
     { id: "desktop-wait", command: "builtin", args: ["desktop-wait"], enabled: false, values: {} },
-    { id: "terminal-exec", command: "builtin", args: ["terminal-exec"], enabled: false, values: {} },
+    { id: "shell-exec", command: "builtin", args: ["shell-exec"], enabled: false, values: {} },
     {
-      id: "terminal-request-path-access",
+      id: "shell-switch-workspace",
       command: "builtin",
-      args: ["terminal-request-path-access"],
+      args: ["shell-switch-workspace"],
       enabled: false,
       values: {},
     },
@@ -143,17 +143,22 @@ export function useConfigCore(options: UseConfigCoreOptions) {
     if (!options.config.sttApiConfigId) {
       options.config.sttAutoSend = false;
     }
-    const seenRoots = new Set<string>();
-    const normalizedRoots: string[] = [];
-    for (const raw of options.config.terminalProjectRoots || []) {
-      const trimmed = String(raw || "").trim();
-      if (!trimmed) continue;
-      const key = trimmed.toLowerCase();
-      if (seenRoots.has(key)) continue;
-      seenRoots.add(key);
-      normalizedRoots.push(trimmed);
+    const seenWorkspaceNames = new Set<string>();
+    const normalizedWorkspaces = [];
+    for (const item of options.config.shellWorkspaces || []) {
+      const name = String(item?.name || "").trim();
+      const path = String(item?.path || "").trim();
+      if (!name || !path) continue;
+      const key = name.toLowerCase();
+      if (seenWorkspaceNames.has(key)) continue;
+      seenWorkspaceNames.add(key);
+      normalizedWorkspaces.push({
+        name,
+        path,
+        builtIn: !!item?.builtIn,
+      });
     }
-    options.config.terminalProjectRoots = normalizedRoots;
+    options.config.shellWorkspaces = normalizedWorkspaces;
   }
 
   function buildConfigPayload(): AppConfig {
@@ -169,7 +174,7 @@ export function useConfigCore(options: UseConfigCoreOptions) {
       ...(options.config.visionApiConfigId ? { visionApiConfigId: options.config.visionApiConfigId } : {}),
       ...(options.config.sttApiConfigId ? { sttApiConfigId: options.config.sttApiConfigId } : {}),
       ...(options.config.sttAutoSend ? { sttAutoSend: true } : {}),
-      terminalProjectRoots: [...(options.config.terminalProjectRoots || [])],
+      shellWorkspaces: [...(options.config.shellWorkspaces || [])],
       apiConfigs: options.config.apiConfigs.map((a) => ({
         id: a.id,
         name: a.name,
@@ -207,7 +212,7 @@ export function useConfigCore(options: UseConfigCoreOptions) {
       visionApiConfigId: options.config.visionApiConfigId,
       sttApiConfigId: options.config.sttApiConfigId,
       sttAutoSend: !!options.config.sttAutoSend,
-      terminalProjectRoots: [...(options.config.terminalProjectRoots || [])],
+      shellWorkspaces: [...(options.config.shellWorkspaces || [])],
       apiConfigs: options.config.apiConfigs.map((a) => ({
         id: a.id,
         name: a.name,

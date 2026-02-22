@@ -1,4 +1,4 @@
-fn openai_headers(api_key: &str) -> Result<HeaderMap, String> {
+﻿fn openai_headers(api_key: &str) -> Result<HeaderMap, String> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     let auth = format!("Bearer {}", api_key.trim());
@@ -523,28 +523,28 @@ fn deepseek_tool_schemas(selected_api: &ApiConfig) -> Vec<Value> {
             }
         }));
     }
-    if tool_enabled(selected_api, "terminal-request-path-access") {
+    if tool_enabled(selected_api, "shell-switch-workspace") {
         tools.push(serde_json::json!({
             "type": "function",
             "function": {
-                "name": "terminal_request_path_access",
-                "description": "Switch terminal root for current session. Requested path must be within user-configured trusted project roots.",
+                "name": "shell_switch_workspace",
+                "description": "Switch shell workspace root by workspaceName.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": { "type": "string", "description": "Directory path (absolute or relative to current session root)." },
+                        "workspace_name": { "type": "string", "description": "Configured workspace name." },
                         "reason": { "type": "string" }
                     },
-                    "required": ["path"]
+                    "required": ["workspace_name"]
                 }
             }
         }));
     }
-    if tool_enabled(selected_api, "terminal-exec") {
+    if tool_enabled(selected_api, "shell-exec") {
         tools.push(serde_json::json!({
             "type": "function",
             "function": {
-                "name": "terminal_exec",
+                "name": "shell_exec",
                 "description": "Execute shell command inside current terminal root. Prefer relative cwd.",
                 "parameters": {
                     "type": "object",
@@ -603,30 +603,30 @@ async fn execute_builtin_tool_call(
                 .map_err(|err| format!("Parse desktop_wait args failed: {err}"))?;
             builtin_desktop_wait(args.ms).await
         }
-        "terminal_request_path_access" | "terminal-request-path-access"
-            if tool_enabled(selected_api, "terminal-request-path-access") =>
+        "shell_switch_workspace" | "shell-switch-workspace"
+            if tool_enabled(selected_api, "shell-switch-workspace") =>
         {
             let state = app_state.ok_or_else(|| {
-                "terminal_request_path_access requires app state".to_string()
+                "shell_switch_workspace requires app state".to_string()
             })?;
-            let args: TerminalRequestPathAccessToolArgs =
+            let args: ShellSwitchWorkspaceToolArgs =
                 serde_json::from_value(args_json.clone()).map_err(|err| {
-                    format!("Parse terminal_request_path_access args failed: {err}")
+                    format!("Parse shell_switch_workspace args failed: {err}")
                 })?;
-            builtin_terminal_request_path_access(
+            builtin_shell_switch_workspace(
                 state,
                 tool_session_id,
-                &args.path,
+                &args.workspace_name,
                 args.reason.as_deref(),
             )
             .await
         }
-        "terminal_exec" | "terminal-exec" if tool_enabled(selected_api, "terminal-exec") => {
+        "shell_exec" | "shell-exec" if tool_enabled(selected_api, "shell-exec") => {
             let state = app_state
-                .ok_or_else(|| "terminal_exec requires app state".to_string())?;
+                .ok_or_else(|| "shell_exec requires app state".to_string())?;
             let args: TerminalExecToolArgs = serde_json::from_value(args_json.clone())
-                .map_err(|err| format!("Parse terminal_exec args failed: {err}"))?;
-            builtin_terminal_exec(
+                .map_err(|err| format!("Parse shell_exec args failed: {err}"))?;
+            builtin_shell_exec(
                 state,
                 tool_session_id,
                 &args.command,
@@ -1272,16 +1272,16 @@ async fn call_model_openai_with_tools(
     let has_memory = tool_enabled(selected_api, "memory-save");
     let has_desktop_screenshot = tool_enabled(selected_api, "desktop-screenshot");
     let has_desktop_wait = tool_enabled(selected_api, "desktop-wait");
-    let has_terminal_request_path_access =
-        tool_enabled(selected_api, "terminal-request-path-access");
-    let has_terminal_exec = tool_enabled(selected_api, "terminal-exec");
+    let has_shell_switch_workspace =
+        tool_enabled(selected_api, "shell-switch-workspace");
+    let has_shell_exec = tool_enabled(selected_api, "shell-exec");
     if !has_fetch
         && !has_bing
         && !has_memory
         && !has_desktop_screenshot
         && !has_desktop_wait
-        && !has_terminal_request_path_access
-        && !has_terminal_exec
+        && !has_shell_switch_workspace
+        && !has_shell_exec
     {
         return call_model_openai_stream_text(api_config, model_name, &prepared, on_delta).await;
     }
@@ -1324,18 +1324,18 @@ async fn call_model_openai_with_tools(
     if has_desktop_wait {
         tools.push(Box::new(BuiltinDesktopWaitTool));
     }
-    if has_terminal_request_path_access {
+    if has_shell_switch_workspace {
         let state = app_state
-            .ok_or_else(|| "terminal_request_path_access requires app state".to_string())?
+            .ok_or_else(|| "shell_switch_workspace requires app state".to_string())?
             .clone();
-        tools.push(Box::new(BuiltinTerminalRequestPathAccessTool {
+        tools.push(Box::new(BuiltinShellSwitchWorkspaceTool {
             app_state: state,
             session_id: tool_session_id.to_string(),
         }));
     }
-    if has_terminal_exec {
+    if has_shell_exec {
         let state = app_state
-            .ok_or_else(|| "terminal_exec requires app state".to_string())?
+            .ok_or_else(|| "shell_exec requires app state".to_string())?
             .clone();
         tools.push(Box::new(BuiltinTerminalExecTool {
             app_state: state,
@@ -1701,16 +1701,16 @@ async fn call_model_gemini_with_tools(
     let has_memory = tool_enabled(selected_api, "memory-save");
     let has_desktop_screenshot = tool_enabled(selected_api, "desktop-screenshot");
     let has_desktop_wait = tool_enabled(selected_api, "desktop-wait");
-    let has_terminal_request_path_access =
-        tool_enabled(selected_api, "terminal-request-path-access");
-    let has_terminal_exec = tool_enabled(selected_api, "terminal-exec");
+    let has_shell_switch_workspace =
+        tool_enabled(selected_api, "shell-switch-workspace");
+    let has_shell_exec = tool_enabled(selected_api, "shell-exec");
     if !has_fetch
         && !has_bing
         && !has_memory
         && !has_desktop_screenshot
         && !has_desktop_wait
-        && !has_terminal_request_path_access
-        && !has_terminal_exec
+        && !has_shell_switch_workspace
+        && !has_shell_exec
     {
         return call_model_gemini_rig_style(api_config, model_name, prepared).await;
     }
@@ -1753,18 +1753,18 @@ async fn call_model_gemini_with_tools(
     if has_desktop_wait {
         tools.push(Box::new(BuiltinDesktopWaitTool));
     }
-    if has_terminal_request_path_access {
+    if has_shell_switch_workspace {
         let state = app_state
-            .ok_or_else(|| "terminal_request_path_access requires app state".to_string())?
+            .ok_or_else(|| "shell_switch_workspace requires app state".to_string())?
             .clone();
-        tools.push(Box::new(BuiltinTerminalRequestPathAccessTool {
+        tools.push(Box::new(BuiltinShellSwitchWorkspaceTool {
             app_state: state,
             session_id: tool_session_id.to_string(),
         }));
     }
-    if has_terminal_exec {
+    if has_shell_exec {
         let state = app_state
-            .ok_or_else(|| "terminal_exec requires app state".to_string())?
+            .ok_or_else(|| "shell_exec requires app state".to_string())?
             .clone();
         tools.push(Box::new(BuiltinTerminalExecTool {
             app_state: state,
@@ -2048,16 +2048,16 @@ async fn call_model_anthropic_with_tools(
     let has_memory = tool_enabled(selected_api, "memory-save");
     let has_desktop_screenshot = tool_enabled(selected_api, "desktop-screenshot");
     let has_desktop_wait = tool_enabled(selected_api, "desktop-wait");
-    let has_terminal_request_path_access =
-        tool_enabled(selected_api, "terminal-request-path-access");
-    let has_terminal_exec = tool_enabled(selected_api, "terminal-exec");
+    let has_shell_switch_workspace =
+        tool_enabled(selected_api, "shell-switch-workspace");
+    let has_shell_exec = tool_enabled(selected_api, "shell-exec");
     if !has_fetch
         && !has_bing
         && !has_memory
         && !has_desktop_screenshot
         && !has_desktop_wait
-        && !has_terminal_request_path_access
-        && !has_terminal_exec
+        && !has_shell_switch_workspace
+        && !has_shell_exec
     {
         return call_model_anthropic_rig_style(api_config, model_name, prepared).await;
     }
@@ -2100,18 +2100,18 @@ async fn call_model_anthropic_with_tools(
     if has_desktop_wait {
         tools.push(Box::new(BuiltinDesktopWaitTool));
     }
-    if has_terminal_request_path_access {
+    if has_shell_switch_workspace {
         let state = app_state
-            .ok_or_else(|| "terminal_request_path_access requires app state".to_string())?
+            .ok_or_else(|| "shell_switch_workspace requires app state".to_string())?
             .clone();
-        tools.push(Box::new(BuiltinTerminalRequestPathAccessTool {
+        tools.push(Box::new(BuiltinShellSwitchWorkspaceTool {
             app_state: state,
             session_id: tool_session_id.to_string(),
         }));
     }
-    if has_terminal_exec {
+    if has_shell_exec {
         let state = app_state
-            .ok_or_else(|| "terminal_exec requires app state".to_string())?
+            .ok_or_else(|| "shell_exec requires app state".to_string())?
             .clone();
         tools.push(Box::new(BuiltinTerminalExecTool {
             app_state: state,
@@ -2516,3 +2516,4 @@ async fn describe_image_with_vision_api(
     };
     Ok(reply.assistant_text)
 }
+

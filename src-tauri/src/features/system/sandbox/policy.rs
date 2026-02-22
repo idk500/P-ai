@@ -85,9 +85,9 @@ fn sandbox_allowed_project_roots_canonical(state: &AppState) -> Result<Vec<PathB
     let mut roots = Vec::<PathBuf>::new();
     let mut seen = std::collections::HashSet::<String>::new();
 
-    for raw in &config.terminal_project_roots {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
+    for ws in &config.shell_workspaces {
+        let trimmed = ws.path.trim();
+        if ws.name.trim().is_empty() || trimmed.is_empty() {
             continue;
         }
         let candidate = PathBuf::from(trimmed);
@@ -170,7 +170,7 @@ fn sandbox_assert_cwd_allowed(
         return Ok(());
     }
     Err(format!(
-        "Working directory is outside current terminal root: {}. Call terminal_request_path_access first.",
+        "Working directory is outside current shell root: {}. Call shell_switch_workspace first.",
         cwd.to_string_lossy()
     ))
 }
