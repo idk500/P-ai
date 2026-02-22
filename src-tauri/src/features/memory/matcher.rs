@@ -503,34 +503,68 @@ fn memory_mixed_ranked_items(
 
     let has_embedding = memory_has_embedding_binding(data_path);
     let mut vector_map = HashMap::<String, f64>::new();
+    let mut vector_available = false;
     if has_embedding {
-        for (memory_id, vector_score) in memory_store_search_vector_scores(
+        match memory_store_search_vector_scores(
             data_path,
             query_text,
             MEMORY_ROUTE_CANDIDATE_LIMIT,
-        )
-        .unwrap_or_default()
-        {
-            if vector_score.is_finite() {
-                vector_map.insert(memory_id, vector_score.clamp(0.0, 1.0));
+        ) {
+            Ok(rows) => {
+                vector_available = true;
+                for (memory_id, vector_score) in rows {
+                    if vector_score.is_finite() {
+                        vector_map.insert(memory_id, vector_score.clamp(0.0, 1.0));
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "[MEMORY] vector search failed, fallback to bm25-only path. err={}",
+                    err
+                );
             }
         }
     }
 
-    // Mode 1: no embedding + no rerank => Tantivy BM25 Top-K.
-    // Mode 2: embedding + no rerank => 0.7 * vector + 0.3 * bm25.
-    // Mode 3: embedding + rerank => bm25 top-k and vector top-k union, then rerank.
-    let rerank_provider = if has_embedding {
-        memory_rerank_provider_from_binding(data_path).ok().flatten()
-    } else {
-        None
-    };
+    // Retrieval modes:
+    // 1) no embedding + no rerank: BM25 direct output.
+    // 2) embedding + no rerank: weighted fusion (vector + BM25).
+    // 3) no embedding + rerank: BM25 candidates reranked.
+    // 4) embedding + rerank: BM25 + vector candidates union, then reranked.
+    let rerank_provider = memory_rerank_provider_from_binding(data_path).ok().flatten();
 
     let has_rerank = rerank_provider.is_some();
+    let effective_has_embedding = has_embedding && vector_available;
     let mut candidate_ids = Vec::<String>::new();
-    if !has_embedding {
+    if has_rerank {
+        let mut all = HashSet::<String>::new();
+        if effective_has_embedding {
+            for id in bm25_top_ids.iter().take(limit) {
+                if all.insert(id.clone()) {
+                    candidate_ids.push(id.clone());
+                }
+            }
+            let mut vector_pairs = vector_map
+                .iter()
+                .map(|(id, score)| (id.clone(), *score))
+                .collect::<Vec<_>>();
+            vector_pairs.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            for (id, _) in vector_pairs.into_iter().take(limit) {
+                if all.insert(id.clone()) {
+                    candidate_ids.push(id);
+                }
+            }
+        } else {
+            for id in bm25_top_ids.iter().take(limit) {
+                if all.insert(id.clone()) {
+                    candidate_ids.push(id.clone());
+                }
+            }
+        }
+    } else if !effective_has_embedding {
         candidate_ids.extend(bm25_top_ids.into_iter().take(limit));
-    } else if !has_rerank {
+    } else {
         let mut all = HashSet::<String>::new();
         for id in &bm25_top_ids {
             if all.insert(id.clone()) {
@@ -547,23 +581,6 @@ fn memory_mixed_ranked_items(
                 candidate_ids.push(id);
             }
         }
-    } else {
-        let mut all = HashSet::<String>::new();
-        for id in bm25_top_ids.iter().take(limit) {
-            if all.insert(id.clone()) {
-                candidate_ids.push(id.clone());
-            }
-        }
-        let mut vector_pairs = vector_map
-            .iter()
-            .map(|(id, score)| (id.clone(), *score))
-            .collect::<Vec<_>>();
-        vector_pairs.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        for (id, _) in vector_pairs.into_iter().take(limit) {
-            if all.insert(id.clone()) {
-                candidate_ids.push(id);
-            }
-        }
     }
 
     if candidate_ids.is_empty() {
@@ -571,14 +588,25 @@ fn memory_mixed_ranked_items(
     }
 
     let mut rerank_map = HashMap::<String, f64>::new();
-    if has_embedding && has_rerank {
+    let mut rerank_available = false;
+    if has_rerank {
         let candidate_memories = candidate_ids
             .iter()
             .filter_map(|id| memory_index.get(id).and_then(|idx| memories.get(*idx)))
             .collect::<Vec<_>>();
         if let Some(provider) = rerank_provider.as_ref() {
-            rerank_map = memory_rerank_scores(provider.as_ref(), query_text, &candidate_memories)
-                .unwrap_or_default();
+            match memory_rerank_scores(provider.as_ref(), query_text, &candidate_memories) {
+                Ok(map) => {
+                    rerank_available = true;
+                    rerank_map = map;
+                }
+                Err(err) => {
+                    eprintln!(
+                        "[MEMORY] rerank failed, fallback to non-rerank scoring. err={}",
+                        err
+                    );
+                }
+            }
         }
     }
 
@@ -588,9 +616,9 @@ fn memory_mixed_ranked_items(
             let idx = *memory_index.get(&memory_id)?;
             let bm25_score = bm25_map.get(&memory_id).copied().unwrap_or(0.0);
             let vector_score = vector_map.get(&memory_id).copied().unwrap_or(0.0);
-            let final_score = if has_embedding && has_rerank {
+            let final_score = if rerank_available {
                 rerank_map.get(&memory_id).copied().unwrap_or(0.0)
-            } else if has_embedding {
+            } else if effective_has_embedding {
                 MEMORY_WEIGHT_VECTOR * vector_score + MEMORY_WEIGHT_BM25 * bm25_score
             } else {
                 bm25_score
