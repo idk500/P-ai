@@ -374,6 +374,7 @@ async fn send_chat_message(
             id: Uuid::new_v4().to_string(),
             role: "user".to_string(),
             created_at: now.clone(),
+            speaker_agent_id: Some(effective_agent_id.clone()),
             parts: user_parts,
             extra_text_blocks,
             provider_meta: None,
@@ -489,6 +490,7 @@ async fn send_chat_message(
                 id: Uuid::new_v4().to_string(),
                 role: "assistant".to_string(),
                 created_at: now.clone(),
+                speaker_agent_id: Some(effective_agent_id.clone()),
                 parts: vec![MessagePart::Text {
                     text: assistant_text_for_storage.clone(),
                 }],
@@ -640,6 +642,7 @@ async fn stop_chat_message(
         id: Uuid::new_v4().to_string(),
         role: "assistant".to_string(),
         created_at: now.clone(),
+        speaker_agent_id: Some(agent_id.clone()),
         parts: vec![MessagePart::Text {
             text: partial_assistant_text,
         }],

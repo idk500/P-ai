@@ -81,6 +81,8 @@
         :persona-name="selectedPersonaName"
         :user-avatar-url="userAvatarUrl"
         :assistant-avatar-url="selectedPersonaAvatarUrl"
+        :persona-name-map="chatPersonaNameMap"
+        :persona-avatar-url-map="chatPersonaAvatarUrlMap"
         :latest-user-text="latestUserText"
         :latest-user-images="latestUserImages"
         :latest-assistant-text="latestAssistantText"
@@ -270,6 +272,8 @@ const props = defineProps<{
   selectedPersonaName: string;
   userAvatarUrl: string;
   selectedPersonaAvatarUrl: string;
+  chatPersonaNameMap: Record<string, string>;
+  chatPersonaAvatarUrlMap: Record<string, string>;
   latestUserText: string;
   latestUserImages: Array<{ mime: string; bytesBase64: string }>;
   latestAssistantText: string;

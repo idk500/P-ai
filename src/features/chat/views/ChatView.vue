@@ -71,14 +71,14 @@
         </div>
         <div v-if="turn.assistantText || turn.assistantReasoningStandard || turn.assistantReasoningInline" class="chat chat-start">
           <div class="chat-header mb-1 flex items-center gap-1">
-            <div v-if="assistantAvatarUrl" class="avatar">
+            <div v-if="turnAssistantAvatarUrl(turn)" class="avatar">
               <div class="w-7 rounded-full">
-                <img :src="assistantAvatarUrl" :alt="personaName || t('archives.roleAssistant')" :title="personaName || t('archives.roleAssistant')" />
+                <img :src="turnAssistantAvatarUrl(turn)" :alt="turnAssistantName(turn)" :title="turnAssistantName(turn)" />
               </div>
             </div>
             <div v-else class="avatar placeholder">
               <div class="bg-neutral text-neutral-content w-7 rounded-full">
-                <span>{{ avatarInitial(personaName || t("archives.roleAssistant")) }}</span>
+                <span>{{ avatarInitial(turnAssistantName(turn)) }}</span>
               </div>
             </div>
             <details
@@ -345,6 +345,8 @@ const props = defineProps<{
   personaName: string;
   userAvatarUrl: string;
   assistantAvatarUrl: string;
+  personaNameMap: Record<string, string>;
+  personaAvatarUrlMap: Record<string, string>;
   latestUserText: string;
   latestUserImages: Array<{ mime: string; bytesBase64: string }>;
   latestAssistantText: string;
@@ -410,6 +412,18 @@ function avatarInitial(name: string): string {
   const text = (name || "").trim();
   if (!text) return "?";
   return text[0].toUpperCase();
+}
+
+function turnAssistantName(turn: ChatTurn): string {
+  const id = String(turn.assistantAgentId || "").trim();
+  if (id && props.personaNameMap[id]) return props.personaNameMap[id];
+  return props.personaName || t("archives.roleAssistant");
+}
+
+function turnAssistantAvatarUrl(turn: ChatTurn): string {
+  const id = String(turn.assistantAgentId || "").trim();
+  if (id && props.personaAvatarUrlMap[id]) return props.personaAvatarUrlMap[id];
+  return props.assistantAvatarUrl || "";
 }
 
 function splitThinkText(raw: string): { visible: string; inline: string } {
