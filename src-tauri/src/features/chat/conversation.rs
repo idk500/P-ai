@@ -187,28 +187,6 @@ fn archive_conversation_now(
     Some(archive_id)
 }
 
-fn keep_recent_turns(messages: &[ChatMessage], turn_count: usize) -> Vec<ChatMessage> {
-    let mut turns: Vec<Vec<ChatMessage>> = Vec::new();
-    let mut i = 0usize;
-    while i < messages.len() {
-        if messages[i].role != "user" {
-            i += 1;
-            continue;
-        }
-        let mut turn = vec![messages[i].clone()];
-        if i + 1 < messages.len() && messages[i + 1].role == "assistant" {
-            turn.push(messages[i + 1].clone());
-            i += 2;
-        } else {
-            i += 1;
-        }
-        turns.push(turn);
-    }
-
-    let start = turns.len().saturating_sub(turn_count);
-    turns[start..].iter().flat_map(|t| t.clone()).collect::<Vec<_>>()
-}
-
 fn compress_image_to_webp(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let image =
         image::load_from_memory(bytes).map_err(|err| format!("Decode image failed: {err}"))?;
