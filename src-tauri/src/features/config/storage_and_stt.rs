@@ -165,11 +165,19 @@ fn normalize_terminal_path_input_for_current_platform(raw: &str) -> String {
     }
 }
 
-fn normalize_terminal_project_roots(config: &mut AppConfig) {
-    let mut normalized = Vec::<String>::new();
-    let mut seen = std::collections::HashSet::<String>::new();
-    for raw in &config.terminal_project_roots {
-        let mut normalized_path = normalize_terminal_path_input_for_current_platform(raw);
+fn normalize_shell_workspaces(config: &mut AppConfig) {
+    let mut normalized = Vec::<ShellWorkspaceConfig>::new();
+    let mut seen_names = std::collections::HashSet::<String>::new();
+    for raw in &config.shell_workspaces {
+        let name = raw.name.trim().to_string();
+        let mut normalized_path = normalize_terminal_path_input_for_current_platform(&raw.path);
+        if name.is_empty() || normalized_path.is_empty() {
+            continue;
+        }
+        let name_key = name.to_ascii_lowercase();
+        if !seen_names.insert(name_key) {
+            continue;
+        }
         if normalized_path.is_empty() {
             continue;
         }
@@ -181,16 +189,13 @@ fn normalize_terminal_project_roots(config: &mut AppConfig) {
                 }
             }
         }
-        let key = if cfg!(target_os = "windows") {
-            normalized_path.to_ascii_lowercase()
-        } else {
-            normalized_path.clone()
-        };
-        if seen.insert(key) {
-            normalized.push(normalized_path);
-        }
+        normalized.push(ShellWorkspaceConfig {
+            name,
+            path: normalized_path,
+            built_in: raw.built_in,
+        });
     }
-    config.terminal_project_roots = normalized;
+    config.shell_workspaces = normalized;
 }
 
 fn normalize_app_config(config: &mut AppConfig) {
@@ -280,7 +285,7 @@ fn normalize_app_config(config: &mut AppConfig) {
     if config.stt_api_config_id.is_none() {
         config.stt_auto_send = false;
     }
-    normalize_terminal_project_roots(config);
+    normalize_shell_workspaces(config);
 }
 
 const MEDIA_REF_PREFIX: &str = "@media:";

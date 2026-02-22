@@ -6,32 +6,32 @@
         <div class="label py-1"><span class="label-text text-xs">{{ t("config.tools.maxIterations") }}</span></div>
         <input v-model.number="config.toolMaxIterations" type="number" min="1" max="100" step="1" class="input input-bordered input-sm" />
       </label>
-      <label class="form-control">
-        <div class="label py-1 flex items-center justify-between gap-2">
-          <span class="label-text text-xs">{{ t("config.tools.terminalProjectRoots") }}</span>
-          <div class="flex items-center gap-1">
+      <div class="card bg-base-100 border border-base-300">
+        <div class="flex items-center justify-between gap-3 p-4">
+          <span class="text-xs font-medium">Shell 工作空间</span>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-xs" type="button" @click="addWorkspace">新建</button>
             <button class="btn btn-xs btn-primary" :disabled="savingConfig" @click="$emit('saveApiConfig')">
-              {{ t("config.tools.normalizeAndSaveRoots") }}
+              保存
             </button>
-            <details class="dropdown dropdown-end">
-              <summary class="btn btn-xs btn-warning btn-circle">?</summary>
-              <div class="dropdown-content z-[1] mt-1 w-80 rounded-box border border-base-300 bg-base-100 p-2 text-[11px] leading-5">
-                {{ t("config.tools.terminalProjectRootsHelp") }}
-              </div>
-            </details>
           </div>
         </div>
-        <textarea
-          v-model="terminalProjectRootsText"
-          class="textarea textarea-bordered textarea-sm min-h-24 font-mono"
-          spellcheck="false"
-          :placeholder="t('config.tools.terminalProjectRootsPlaceholder')"
-        />
-        <div class="label py-1">
-          <span class="label-text-alt text-[11px] opacity-70">{{ t("config.tools.terminalProjectRootsHint") }}</span>
+        <div class="grid gap-3 px-4 pb-4">
+          <div v-for="(ws, index) in config.shellWorkspaces" :key="`ws-${index}-${ws.name}`" class="rounded-box border border-base-300 p-3 bg-base-200">
+            <div class="flex items-center gap-2 mb-3">
+              <input v-model.trim="ws.name" class="input input-bordered input-xs flex-1" placeholder="工作空间名称" />
+              <button class="btn btn-xs bg-base-100" type="button" :disabled="!!ws.builtIn" @click="pickWorkspacePath(index)">选择路径</button>
+              <button class="btn btn-xs btn-ghost" type="button" :disabled="!!ws.builtIn" @click="removeWorkspace(index)">删除</button>
+            </div>
+            <input v-model.trim="ws.path" class="input input-bordered input-xs w-full font-mono" placeholder="目录路径" :disabled="!!ws.builtIn" />
+          </div>
         </div>
-      </label>
+        <div class="mt-3 px-4 pb-4 text-[11px] opacity-70">
+          仅允许切换到这些工作空间；名称必须唯一；默认工作空间不可删除。
+        </div>
+      </div>
     </div>
+    <div class="mt-4"></div>
     <div v-if="!toolApiConfig.enableTools" class="text-xs opacity-70">{{ t("config.tools.disabledHint") }}</div>
     <div v-else class="grid gap-2">
       <div v-for="tool in toolApiConfig.tools" :key="tool.id" class="card card-compact bg-base-100 border border-base-300 relative">
@@ -89,7 +89,7 @@
             </div>
             <div v-if="waitResult" class="mt-2 text-[11px] opacity-80 break-all">{{ waitResult }}</div>
           </div>
-          <div v-if="tool.id === 'terminal-exec'" class="mt-2 pl-3">
+          <div v-if="tool.id === 'shell-exec'" class="mt-2 pl-3">
             <div class="flex items-center justify-between gap-2">
               <div class="text-[11px] opacity-70">{{ t("config.tools.terminalSelfCheckDesc") }}</div>
               <button class="btn btn-xs btn-primary" :disabled="terminalSelfCheckRunning" @click="runTerminalSelfCheck">
@@ -124,6 +124,7 @@ import { useI18n } from "vue-i18n";
 import type { ApiConfigItem, AppConfig, ToolLoadStatus } from "../../../../types/app";
 import { invokeTauri } from "../../../../services/tauri-api";
 import { toErrorMessage } from "../../../../utils/error";
+import { open } from "@tauri-apps/plugin-dialog";
 
 type TerminalSelfCheckStep = {
   name: string;
@@ -171,15 +172,43 @@ const waitMs = ref(800);
 const screenshotPreviewDataUrl = ref("");
 const screenshotDialogRef = ref<HTMLDialogElement | null>(null);
 const GIT_DOWNLOAD_URL = "https://git-scm.com/downloads";
-const terminalProjectRootsText = computed({
-  get: () => (props.config.terminalProjectRoots || []).join("\n"),
-  set: (value) => {
-    props.config.terminalProjectRoots = String(value || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-  },
-});
+function addWorkspace() {
+  if (!Array.isArray(props.config.shellWorkspaces)) props.config.shellWorkspaces = [];
+  props.config.shellWorkspaces.push({
+    name: "",
+    path: "",
+    builtIn: false,
+  });
+}
+
+function removeWorkspace(index: number) {
+  const item = props.config.shellWorkspaces[index];
+  if (!item || item.builtIn) return;
+  props.config.shellWorkspaces.splice(index, 1);
+}
+
+function defaultWorkspaceNameFromPath(path: string): string {
+  const raw = String(path || "").trim();
+  if (!raw) return "";
+  const normalized = raw.replace(/\\/g, "/").replace(/\/+$/, "");
+  const part = normalized.split("/").pop() || "";
+  return part.trim();
+}
+
+async function pickWorkspacePath(index: number) {
+  const item = props.config.shellWorkspaces[index];
+  if (!item) return;
+  const picked = await open({
+    directory: true,
+    multiple: false,
+    defaultPath: item.path || undefined,
+  });
+  if (!picked || Array.isArray(picked)) return;
+  item.path = String(picked);
+  if (!String(item.name || "").trim()) {
+    item.name = defaultWorkspaceNameFromPath(item.path) || `workspace-${index + 1}`;
+  }
+}
 
 function toolStatusById(id: string): ToolLoadStatus | undefined {
   return props.toolStatuses.find((s) => s.id === id);
@@ -204,8 +233,8 @@ function toolDescription(id: string): string {
   if (id === "memory-save") return t("config.tools.descMemorySave");
   if (id === "desktop-screenshot") return t("config.tools.descDesktopScreenshot");
   if (id === "desktop-wait") return t("config.tools.descDesktopWait");
-  if (id === "terminal-exec") return t("config.tools.descTerminalExec");
-  if (id === "terminal-request-path-access") return t("config.tools.descTerminalPathAccess");
+  if (id === "shell-exec") return t("config.tools.descTerminalExec");
+  if (id === "shell-switch-workspace") return t("config.tools.descTerminalPathAccess");
   return t("config.tools.descGeneric");
 }
 
@@ -220,12 +249,12 @@ function toolSwitchDisabled(_id: string): boolean {
 function isToolRunning(id: string): boolean {
   if (id === "desktop-screenshot") return screenshotRunning.value;
   if (id === "desktop-wait") return waitRunning.value;
-  if (id === "terminal-exec") return terminalSelfCheckRunning.value;
+  if (id === "shell-exec") return terminalSelfCheckRunning.value;
   return false;
 }
 
 function showGitInstallLink(id: string): boolean {
-  if (id !== "terminal-exec") return false;
+  if (id !== "shell-exec") return false;
   const status = toolStatusById(id);
   return status?.status === "unavailable";
 }

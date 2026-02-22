@@ -251,20 +251,29 @@ fn default_api_tools() -> Vec<ApiToolConfig> {
             values: serde_json::json!({}),
         },
         ApiToolConfig {
-            id: "terminal-exec".to_string(),
+            id: "shell-exec".to_string(),
             command: "builtin".to_string(),
-            args: vec!["terminal-exec".to_string()],
+            args: vec!["shell-exec".to_string()],
             enabled: false,
             values: serde_json::json!({}),
         },
         ApiToolConfig {
-            id: "terminal-request-path-access".to_string(),
+            id: "shell-switch-workspace".to_string(),
             command: "builtin".to_string(),
-            args: vec!["terminal-request-path-access".to_string()],
+            args: vec!["shell-switch-workspace".to_string()],
             enabled: false,
             values: serde_json::json!({}),
         },
     ]
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellWorkspaceConfig {
+    name: String,
+    path: String,
+    #[serde(default)]
+    built_in: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -369,7 +378,7 @@ struct AppConfig {
     #[serde(default)]
     stt_auto_send: bool,
     #[serde(default)]
-    terminal_project_roots: Vec<String>,
+    shell_workspaces: Vec<ShellWorkspaceConfig>,
     api_configs: Vec<ApiConfig>,
 }
 
@@ -388,7 +397,7 @@ impl Default for AppConfig {
             vision_api_config_id: None,
             stt_api_config_id: None,
             stt_auto_send: false,
-            terminal_project_roots: Vec::new(),
+            shell_workspaces: Vec::new(),
             api_configs: vec![api_config],
         }
     }

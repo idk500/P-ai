@@ -132,8 +132,14 @@ export function useConfigPersistence(options: UseConfigPersistenceOptions) {
       options.config.visionApiConfigId = cfg.visionApiConfigId ?? undefined;
       options.config.sttApiConfigId = cfg.sttApiConfigId ?? undefined;
       options.config.sttAutoSend = !!cfg.sttAutoSend;
-      options.config.terminalProjectRoots = Array.isArray(cfg.terminalProjectRoots)
-        ? cfg.terminalProjectRoots.map((v) => String(v || ""))
+      options.config.shellWorkspaces = Array.isArray(cfg.shellWorkspaces)
+        ? cfg.shellWorkspaces
+            .map((v) => ({
+              name: String((v as { name?: unknown })?.name || "").trim(),
+              path: String((v as { path?: unknown })?.path || "").trim(),
+              builtIn: !!(v as { builtIn?: unknown })?.builtIn,
+            }))
+            .filter((v) => v.name && v.path)
         : [];
       options.config.apiConfigs.splice(
         0,
@@ -171,8 +177,14 @@ export function useConfigPersistence(options: UseConfigPersistenceOptions) {
       options.config.visionApiConfigId = saved.visionApiConfigId ?? undefined;
       options.config.sttApiConfigId = saved.sttApiConfigId ?? undefined;
       options.config.sttAutoSend = !!saved.sttAutoSend;
-      options.config.terminalProjectRoots = Array.isArray(saved.terminalProjectRoots)
-        ? saved.terminalProjectRoots.map((v) => String(v || ""))
+      options.config.shellWorkspaces = Array.isArray(saved.shellWorkspaces)
+        ? saved.shellWorkspaces
+            .map((v) => ({
+              name: String((v as { name?: unknown })?.name || "").trim(),
+              path: String((v as { path?: unknown })?.path || "").trim(),
+              builtIn: !!(v as { builtIn?: unknown })?.builtIn,
+            }))
+            .filter((v) => v.name && v.path)
         : [];
       options.config.apiConfigs.splice(0, options.config.apiConfigs.length, ...saved.apiConfigs);
       options.normalizeApiBindingsLocal();
