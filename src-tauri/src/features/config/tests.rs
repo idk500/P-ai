@@ -1,4 +1,4 @@
-    #[test]
+﻿    #[test]
     fn image_text_cache_upsert_and_find_should_work() {
         let mut data = AppData::default();
         upsert_image_text_cache(&mut data, "h1", "vision-a", "text-a");
@@ -42,7 +42,7 @@
             vision_api_config_id: None,
             stt_api_config_id: None,
             stt_auto_send: false,
-            terminal_project_roots: Vec::new(),
+            shell_workspaces: Vec::new(),
             api_configs: vec![
                 ApiConfig {
                     id: "a1".to_string(),
@@ -98,7 +98,7 @@
             vision_api_config_id: None,
             stt_api_config_id: None,
             stt_auto_send: false,
-            terminal_project_roots: Vec::new(),
+            shell_workspaces: Vec::new(),
             api_configs: vec![
                 ApiConfig {
                     id: "chat-a".to_string(),
@@ -151,7 +151,7 @@
             vision_api_config_id: Some("tts-a".to_string()),
             stt_api_config_id: Some("tts-a".to_string()),
             stt_auto_send: true,
-            terminal_project_roots: Vec::new(),
+            shell_workspaces: Vec::new(),
             api_configs: vec![ApiConfig {
                 id: "tts-a".to_string(),
                 name: "tts-a".to_string(),
@@ -193,18 +193,31 @@
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn normalize_terminal_project_roots_should_convert_and_dedup_windows_paths() {
+    fn normalize_shell_workspaces_should_convert_and_dedup_windows_paths() {
         let mut cfg = AppConfig::default();
-        cfg.terminal_project_roots = vec![
-            "/e/__easy_call_ai_path_norm_test__/repo".to_string(),
-            "E:/__easy_call_ai_path_norm_test__/repo".to_string(),
-            r#""E:\__easy_call_ai_path_norm_test__\repo""#.to_string(),
+        cfg.shell_workspaces = vec![
+            ShellWorkspaceConfig {
+                name: "A".to_string(),
+                path: "/e/__easy_call_ai_path_norm_test__/repo".to_string(),
+                built_in: false,
+            },
+            ShellWorkspaceConfig {
+                name: "a".to_string(),
+                path: "E:/__easy_call_ai_path_norm_test__/repo".to_string(),
+                built_in: false,
+            },
+            ShellWorkspaceConfig {
+                name: "B".to_string(),
+                path: r#""E:\__easy_call_ai_path_norm_test__\repo""#.to_string(),
+                built_in: false,
+            },
         ];
-        normalize_terminal_project_roots(&mut cfg);
-        assert_eq!(cfg.terminal_project_roots.len(), 1);
+        normalize_shell_workspaces(&mut cfg);
+        assert_eq!(cfg.shell_workspaces.len(), 2);
         assert_eq!(
-            cfg.terminal_project_roots[0],
+            cfg.shell_workspaces[0].path,
             r"E:\__easy_call_ai_path_norm_test__\repo".to_string()
         );
     }
+
 

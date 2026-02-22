@@ -1,4 +1,4 @@
-fn inflight_chat_key(api_config_id: &str, agent_id: &str) -> String {
+﻿fn inflight_chat_key(api_config_id: &str, agent_id: &str) -> String {
     format!("{}::{}", api_config_id.trim(), agent_id.trim())
 }
 
@@ -1259,7 +1259,7 @@ fn check_tools_status(
             "memory-save" => ("loaded".to_string(), "内置记忆工具可用".to_string()),
             "desktop-screenshot" => ("loaded".to_string(), "桌面截图工具可用".to_string()),
             "desktop-wait" => ("loaded".to_string(), "桌面等待工具可用".to_string()),
-            "terminal-exec" => {
+            "shell-exec" => {
                 #[cfg(target_os = "windows")]
                 {
                     if state.terminal_shell.kind == "missing-git-bash" {
@@ -1277,7 +1277,7 @@ fn check_tools_status(
                     ("loaded".to_string(), "终端执行工具可用".to_string())
                 }
             }
-            "terminal-request-path-access" => {
+            "shell-switch-workspace" => {
                 #[cfg(target_os = "windows")]
                 {
                     if state.terminal_shell.kind == "missing-git-bash" {
@@ -1398,3 +1398,4 @@ async fn send_debug_probe(state: State<'_, AppState>) -> Result<String, String> 
     };
     Ok(reply.assistant_text)
 }
+

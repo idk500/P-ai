@@ -970,8 +970,8 @@ struct TerminalExecToolArgs {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-struct TerminalRequestPathAccessToolArgs {
-    path: String,
+struct ShellSwitchWorkspaceToolArgs {
+    workspace_name: String,
     #[serde(default)]
     reason: Option<String>,
 }
@@ -1229,16 +1229,16 @@ struct BuiltinTerminalExecTool {
 }
 
 impl Tool for BuiltinTerminalExecTool {
-    const NAME: &'static str = "terminal_exec";
+    const NAME: &'static str = "shell_exec";
     type Error = ToolInvokeError;
     type Args = TerminalExecToolArgs;
     type Output = Value;
 
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
-            name: "terminal_exec".to_string(),
+            name: "shell_exec".to_string(),
             description:
-                "Execute a shell command inside current terminal root. Prefer relative cwd."
+                "Execute a shell command inside current shell workspace root. cwd must be relative."
                     .to_string(),
             parameters: serde_json::json!({
               "type": "object",
@@ -1255,10 +1255,10 @@ impl Tool for BuiltinTerminalExecTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let args_json = serde_json::to_value(&args).unwrap_or(Value::Null);
         eprintln!(
-            "[TOOL-DEBUG] execute_builtin_tool.start name=terminal-exec args={}",
+            "[TOOL-DEBUG] execute_builtin_tool.start name=shell-exec args={}",
             debug_value_snippet(&args_json, 240)
         );
-        let result = builtin_terminal_exec(
+        let result = builtin_shell_exec(
             &self.app_state,
             &self.session_id,
             &args.command,
@@ -1269,11 +1269,11 @@ impl Tool for BuiltinTerminalExecTool {
         .map_err(ToolInvokeError::from);
         match &result {
             Ok(v) => eprintln!(
-                "[TOOL-DEBUG] execute_builtin_tool.ok name=terminal-exec result={}",
+                "[TOOL-DEBUG] execute_builtin_tool.ok name=shell-exec result={}",
                 debug_value_snippet(v, 240)
             ),
             Err(err) => {
-                eprintln!("[TOOL-DEBUG] execute_builtin_tool.err name=terminal-exec err={err}")
+                eprintln!("[TOOL-DEBUG] execute_builtin_tool.err name=shell-exec err={err}")
             }
         }
         result
@@ -1281,30 +1281,30 @@ impl Tool for BuiltinTerminalExecTool {
 }
 
 #[derive(Debug, Clone)]
-struct BuiltinTerminalRequestPathAccessTool {
+struct BuiltinShellSwitchWorkspaceTool {
     app_state: AppState,
     session_id: String,
 }
 
-impl Tool for BuiltinTerminalRequestPathAccessTool {
-    const NAME: &'static str = "terminal_request_path_access";
+impl Tool for BuiltinShellSwitchWorkspaceTool {
+    const NAME: &'static str = "shell_switch_workspace";
     type Error = ToolInvokeError;
-    type Args = TerminalRequestPathAccessToolArgs;
+    type Args = ShellSwitchWorkspaceToolArgs;
     type Output = Value;
 
     async fn definition(&self, _prompt: String) -> ToolDefinition {
         ToolDefinition {
-            name: "terminal_request_path_access".to_string(),
+            name: "shell_switch_workspace".to_string(),
             description:
-                "Switch terminal root for current session. Path must be within configured trusted project roots."
+                "Switch shell workspace root by workspaceName."
                 .to_string(),
             parameters: serde_json::json!({
               "type": "object",
               "properties": {
-                "path": { "type": "string", "description": "Directory path (absolute or relative to current session root)" },
+                "workspace_name": { "type": "string", "description": "Configured workspace name" },
                 "reason": { "type": "string", "description": "Why this path is needed" }
               },
-              "required": ["path"]
+              "required": ["workspace_name"]
             }),
         }
     }
@@ -1312,24 +1312,24 @@ impl Tool for BuiltinTerminalRequestPathAccessTool {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let args_json = serde_json::to_value(&args).unwrap_or(Value::Null);
         eprintln!(
-            "[TOOL-DEBUG] execute_builtin_tool.start name=terminal-request-path-access args={}",
+            "[TOOL-DEBUG] execute_builtin_tool.start name=shell-switch-workspace args={}",
             debug_value_snippet(&args_json, 240)
         );
-        let result = builtin_terminal_request_path_access(
+        let result = builtin_shell_switch_workspace(
             &self.app_state,
             &self.session_id,
-            &args.path,
+            &args.workspace_name,
             args.reason.as_deref(),
         )
         .await
         .map_err(ToolInvokeError::from);
         match &result {
             Ok(v) => eprintln!(
-                "[TOOL-DEBUG] execute_builtin_tool.ok name=terminal-request-path-access result={}",
+                "[TOOL-DEBUG] execute_builtin_tool.ok name=shell-switch-workspace result={}",
                 debug_value_snippet(v, 240)
             ),
             Err(err) => eprintln!(
-                "[TOOL-DEBUG] execute_builtin_tool.err name=terminal-request-path-access err={err}"
+                "[TOOL-DEBUG] execute_builtin_tool.err name=shell-switch-workspace err={err}"
             ),
         }
         result
