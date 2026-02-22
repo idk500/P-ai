@@ -1673,7 +1673,11 @@ fn parse_archive_summary_draft(raw: &str) -> Option<ArchiveSummaryDraft> {
     serde_json::from_str::<ArchiveSummaryDraft>(&trimmed[start..=end]).ok()
 }
 
-fn merge_memories_into_store(data_path: &PathBuf, drafts: &[ArchiveMemoryDraft]) -> Result<usize, String> {
+fn merge_memories_into_store(
+    data_path: &PathBuf,
+    drafts: &[ArchiveMemoryDraft],
+    owner_agent_id: Option<&str>,
+) -> Result<usize, String> {
     let mut inputs = Vec::<MemoryDraftInput>::new();
     for d in drafts {
         let judgment = clean_text(d.judgment.trim());
@@ -1689,6 +1693,10 @@ fn merge_memories_into_store(data_path: &PathBuf, drafts: &[ArchiveMemoryDraft])
             judgment,
             reasoning: clean_text(d.reasoning.trim()),
             tags,
+            owner_agent_id: owner_agent_id
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(ToOwned::to_owned),
         });
     }
     memory_store_merge_drafts(data_path, &inputs)
@@ -1888,7 +1896,17 @@ async fn force_archive_current(
             .cloned()
             .ok_or_else(|| "Selected agent not found.".to_string())?;
         let user_alias = data.user_alias.clone();
-        let memories = memory_store_list_memories(&state.data_path)?;
+        let private_memory_enabled = data
+            .agents
+            .iter()
+            .find(|a| a.id == effective_agent_id)
+            .map(|a| a.private_memory_enabled)
+            .unwrap_or(false);
+        let memories = memory_store_list_memories_visible_for_agent(
+            &state.data_path,
+            &effective_agent_id,
+            private_memory_enabled,
+        )?;
         let source_idx = latest_active_conversation_index(&data, &selected_api.id, &effective_agent_id)
             .ok_or_else(|| "当前没有可归档的活动对话。".to_string())?;
         let source = data
@@ -1962,7 +1980,12 @@ async fn force_archive_current(
         &selected_api.id,
         &source.agent_id,
     );
-    let merged_memories = merge_memories_into_store(&state.data_path, &summary_memories)?;
+    let owner_agent_id = data
+        .agents
+        .iter()
+        .find(|a| a.id == source.agent_id && !a.is_built_in_user && a.private_memory_enabled)
+        .map(|a| a.id.as_str());
+    let merged_memories = merge_memories_into_store(&state.data_path, &summary_memories, owner_agent_id)?;
     write_app_data(&state.data_path, &data)?;
     drop(guard);
     eprintln!(

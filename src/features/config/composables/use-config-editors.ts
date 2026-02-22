@@ -43,6 +43,7 @@ export function useConfigEditors(options: UseConfigEditorsOptions) {
       id,
       name: `${options.t("config.persona.title")} ${options.assistantPersonas.value.length + 1}`,
       systemPrompt: options.t("config.persona.assistantPlaceholder"),
+      privateMemoryEnabled: false,
       createdAt: now,
       updatedAt: now,
       avatarPath: undefined,
@@ -72,4 +73,3 @@ export function useConfigEditors(options: UseConfigEditorsOptions) {
     removeSelectedPersona,
   };
 }
-

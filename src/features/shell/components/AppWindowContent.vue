@@ -58,6 +58,7 @@
       @remove-selected-api-config="removeSelectedApiConfig"
       @add-persona="addPersona"
       @remove-selected-persona="removeSelectedPersona"
+      @import-persona-memories="importPersonaMemories"
       @open-current-history="openCurrentHistory"
       @open-prompt-preview="openPromptPreview"
       @open-system-prompt-preview="openSystemPromptPreview"
@@ -219,6 +220,7 @@ type MemoryItem = {
   judgment: string;
   reasoning: string;
   tags: string[];
+  ownerAgentId?: string;
 };
 
 const props = defineProps<{
@@ -320,6 +322,7 @@ const props = defineProps<{
   removeSelectedApiConfig: () => void;
   addPersona: () => void;
   removeSelectedPersona: () => void;
+  importPersonaMemories: (payload: { agentId: string; file: File }) => void;
   openCurrentHistory: () => void;
   openPromptPreview: () => void;
   openSystemPromptPreview: () => void;

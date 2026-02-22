@@ -59,6 +59,7 @@ struct MemoryDraftInput {
     judgment: String,
     reasoning: String,
     tags: Vec<String>,
+    owner_agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +153,7 @@ fn memory_store_migrate_legacy_app_data_memories(
             judgment,
             reasoning,
             tags,
+            owner_agent_id: None,
         });
     }
 
@@ -250,6 +252,7 @@ fn memory_store_init_schema(conn: &Connection) -> Result<(), String> {
             memory_type TEXT NOT NULL DEFAULT 'knowledge',
             judgment TEXT NOT NULL,
             reasoning TEXT NOT NULL DEFAULT '',
+            owner_agent_id TEXT,
             strength INTEGER NOT NULL DEFAULT 0,
             is_active INTEGER NOT NULL DEFAULT 1,
             memory_scope TEXT NOT NULL DEFAULT 'public',
@@ -330,6 +333,24 @@ fn memory_store_init_schema(conn: &Connection) -> Result<(), String> {
         );",
     )
     .map_err(|err| format!("Initialize memory db schema failed: {err}"))?;
+
+    let has_owner_agent_col: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memory_record') WHERE name='owner_agent_id'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if has_owner_agent_col == 0 {
+        conn.execute_batch(
+            "ALTER TABLE memory_record ADD COLUMN owner_agent_id TEXT;
+             CREATE INDEX IF NOT EXISTS idx_memory_owner_agent_id ON memory_record(owner_agent_id);",
+        )
+        .map_err(|err| format!("Migrate memory_record owner_agent_id failed: {err}"))?;
+    } else {
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_memory_owner_agent_id ON memory_record(owner_agent_id);")
+            .map_err(|err| format!("Ensure idx_memory_owner_agent_id failed: {err}"))?;
+    }
 
     // Migrate memory_fts: drop the old 2-column (tags+judgment) FTS table and recreate
     // as single-column. The judgment column stores concatenated "judgment + tags" text for BM25.
@@ -557,6 +578,7 @@ fn memory_store_ensure_jieba_tags(data_path: &PathBuf) {
     LOADED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg(test)]
 fn memory_store_search_fts_bm25(
     data_path: &PathBuf,
     query_text: &str,
@@ -640,8 +662,12 @@ fn memory_store_upsert_drafts(
 
         let existing_id = tx
             .query_row(
-                "SELECT id FROM memory_record WHERE lower(trim(judgment))=lower(trim(?1)) LIMIT 1",
-                params![draft.judgment],
+                "SELECT id
+                 FROM memory_record
+                 WHERE lower(trim(judgment))=lower(trim(?1))
+                   AND ((owner_agent_id IS NULL AND ?2 IS NULL) OR owner_agent_id=?2)
+                 LIMIT 1",
+                params![draft.judgment, draft.owner_agent_id.as_deref()],
                 |row| row.get::<_, String>(0),
             )
             .optional()
@@ -649,17 +675,36 @@ fn memory_store_upsert_drafts(
 
         let memory_id = if let Some(id) = existing_id {
             tx.execute(
-                "UPDATE memory_record SET memory_type=?1, judgment=?2, reasoning=?3, updated_at=?4 WHERE id=?5",
-                params![memory_type, draft.judgment, draft.reasoning, now, id],
+                "UPDATE memory_record
+                 SET memory_type=?1, judgment=?2, reasoning=?3, owner_agent_id=?4, updated_at=?5
+                 WHERE id=?6",
+                params![
+                    memory_type,
+                    draft.judgment,
+                    draft.reasoning,
+                    draft.owner_agent_id.as_deref(),
+                    now,
+                    id
+                ],
             )
             .map_err(|err| format!("Update memory_record failed: {err}"))?;
             id
         } else {
             let id = Uuid::new_v4().to_string();
             tx.execute(
-                "INSERT INTO memory_record(id, memory_type, judgment, reasoning, strength, is_active, memory_scope, useful_count, useful_score, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 0, 1, 'public', 0, 0, ?5, ?6)",
-                params![id, memory_type, draft.judgment, draft.reasoning, now, now],
+                "INSERT INTO memory_record(
+                    id, memory_type, judgment, reasoning, owner_agent_id, strength, is_active, memory_scope, useful_count, useful_score, created_at, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 1, 'public', 0, 0, ?6, ?7)",
+                params![
+                    id,
+                    memory_type,
+                    draft.judgment,
+                    draft.reasoning,
+                    draft.owner_agent_id.as_deref(),
+                    now,
+                    now
+                ],
             )
             .map_err(|err| format!("Insert memory_record failed: {err}"))?;
             id
@@ -698,7 +743,7 @@ fn memory_store_list_memories(data_path: &PathBuf) -> Result<Vec<MemoryEntry>, S
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, memory_type, judgment, reasoning, created_at, updated_at
+            "SELECT id, memory_type, judgment, reasoning, owner_agent_id, created_at, updated_at
              FROM memory_record
              ORDER BY updated_at DESC",
         )
@@ -711,15 +756,16 @@ fn memory_store_list_memories(data_path: &PathBuf) -> Result<Vec<MemoryEntry>, S
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
             ))
         })
         .map_err(|err| format!("Query list memories failed: {err}"))?;
 
     let mut out = Vec::<MemoryEntry>::new();
     for row in rows {
-        let (id, memory_type, judgment, reasoning, created_at, updated_at) =
+        let (id, memory_type, judgment, reasoning, owner_agent_id, created_at, updated_at) =
             row.map_err(|err| format!("Read memory row failed: {err}"))?;
         let mut tag_stmt = conn
             .prepare(
@@ -744,6 +790,7 @@ fn memory_store_list_memories(data_path: &PathBuf) -> Result<Vec<MemoryEntry>, S
             judgment,
             reasoning,
             tags,
+            owner_agent_id,
             created_at,
             updated_at,
         });
@@ -778,6 +825,159 @@ fn memory_store_delete_memory(data_path: &PathBuf, memory_id: &str) -> Result<()
     Ok(())
 }
 
+fn memory_store_list_memories_visible_for_agent(
+    data_path: &PathBuf,
+    agent_id: &str,
+    private_memory_enabled: bool,
+) -> Result<Vec<MemoryEntry>, String> {
+    let target = agent_id.trim();
+    if target.is_empty() {
+        return memory_store_list_memories(data_path);
+    }
+    let all = memory_store_list_memories(data_path)?;
+    let filtered = all
+        .into_iter()
+        .filter(|m| match m.owner_agent_id.as_deref() {
+            None => true,
+            Some(owner) => private_memory_enabled && owner == target,
+        })
+        .collect::<Vec<_>>();
+    Ok(filtered)
+}
+
+fn memory_store_list_private_memories_by_agent(
+    data_path: &PathBuf,
+    agent_id: &str,
+) -> Result<Vec<MemoryEntry>, String> {
+    let target = agent_id.trim();
+    if target.is_empty() {
+        return Ok(Vec::new());
+    }
+    let all = memory_store_list_memories(data_path)?;
+    Ok(all
+        .into_iter()
+        .filter(|m| m.owner_agent_id.as_deref() == Some(target))
+        .collect::<Vec<_>>())
+}
+
+fn memory_store_count_private_memories_by_agent(
+    data_path: &PathBuf,
+    agent_id: &str,
+) -> Result<usize, String> {
+    let target = agent_id.trim();
+    if target.is_empty() {
+        return Ok(0);
+    }
+    let conn = memory_store_open(data_path)?;
+    let count = conn
+        .query_row(
+            "SELECT COUNT(1) FROM memory_record WHERE owner_agent_id=?1",
+            params![target],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|err| format!("Count private memories by agent failed: {err}"))?;
+    Ok(count.max(0) as usize)
+}
+
+fn memory_store_delete_memories_by_owner_agent_id(
+    data_path: &PathBuf,
+    agent_id: &str,
+) -> Result<usize, String> {
+    let target = agent_id.trim();
+    if target.is_empty() {
+        return Ok(0);
+    }
+    let mut conn = memory_store_open(data_path)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|err| format!("Begin owner memory delete transaction failed: {err}"))?;
+
+    tx.execute("DELETE FROM memory_fts WHERE item_id IN (SELECT id FROM memory_record WHERE owner_agent_id=?1)", params![target])
+        .map_err(|err| format!("Delete owner memory_fts failed: {err}"))?;
+    let deleted = tx
+        .execute("DELETE FROM memory_record WHERE owner_agent_id=?1", params![target])
+        .map_err(|err| format!("Delete owner memory_record failed: {err}"))?;
+
+    tx.commit()
+        .map_err(|err| format!("Commit owner memory delete transaction failed: {err}"))?;
+    if deleted > 0 {
+        invalidate_memory_matcher_cache();
+    }
+    Ok(deleted)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentPrivateMemoryExportResult {
+    path: String,
+    count: usize,
+}
+
+fn memory_store_export_agent_private_memories(
+    data_path: &PathBuf,
+    agent_id: &str,
+) -> Result<AgentPrivateMemoryExportResult, String> {
+    let target = agent_id.trim();
+    if target.is_empty() {
+        return Err("agent_id is required".to_string());
+    }
+    let memories = memory_store_list_private_memories_by_agent(data_path, target)?;
+    let mut exported_memories = Vec::with_capacity(memories.len());
+    for mut memory in memories {
+        // Persona-private export is intentionally rewritten as global memories,
+        // so users can import into global scope directly.
+        memory.owner_agent_id = None;
+        exported_memories.push(memory);
+    }
+
+    let ts = OffsetDateTime::now_utc().unix_timestamp().to_string();
+    let export_dir = app_root_from_data_path(data_path)
+        .join("backups")
+        .join(ts);
+    fs::create_dir_all(&export_dir)
+        .map_err(|err| format!("Create private memory backup dir failed: {err}"))?;
+    let safe_agent = target.replace('\\', "_").replace('/', "_").replace(':', "_");
+    let file_name = format!("agent-{safe_agent}-private-memories.json");
+    let path = export_dir.join(file_name);
+    let payload = serde_json::json!({
+        "version": 1,
+        "exportedAt": now_iso(),
+        "agentId": target,
+        "memories": exported_memories,
+    });
+    let body = serde_json::to_string_pretty(&payload)
+        .map_err(|err| format!("Serialize private memory export payload failed: {err}"))?;
+    fs::write(&path, body)
+        .map_err(|err| format!("Write private memory export file failed: {err}"))?;
+
+    Ok(AgentPrivateMemoryExportResult {
+        path: path.to_string_lossy().to_string(),
+        count: payload
+            .get("memories")
+            .and_then(|v| v.as_array())
+            .map(|v| v.len())
+            .unwrap_or(0),
+    })
+}
+
+fn memory_store_import_memories_for_agent(
+    data_path: &PathBuf,
+    incoming: &[MemoryEntry],
+    agent_id: &str,
+) -> Result<MemoryStoreImportStats, String> {
+    let target = agent_id.trim();
+    if target.is_empty() {
+        return Err("agent_id is required".to_string());
+    }
+    let mut rewritten = Vec::<MemoryEntry>::with_capacity(incoming.len());
+    for item in incoming {
+        let mut next = item.clone();
+        next.owner_agent_id = Some(target.to_string());
+        rewritten.push(next);
+    }
+    memory_store_import_memories(data_path, &rewritten)
+}
+
 fn memory_store_import_memories(
     data_path: &PathBuf,
     incoming: &[MemoryEntry],
@@ -801,6 +1001,7 @@ fn memory_store_import_memories(
             judgment,
             reasoning,
             tags,
+            owner_agent_id: item.owner_agent_id.clone(),
         });
     }
 
@@ -1341,6 +1542,7 @@ mod memory_store_tests {
             judgment: "Alice likes rust".to_string(),
             reasoning: "用户偏好".to_string(),
             tags: vec!["alice".to_string(), "rust".to_string()],
+            owner_agent_id: None,
         }];
         let (saved, total) = memory_store_upsert_drafts(&data_path, &drafts).expect("upsert drafts");
         assert_eq!(saved.len(), 1);
@@ -1357,6 +1559,7 @@ mod memory_store_tests {
             judgment: "Alice likes rust".to_string(),
             reasoning: "".to_string(),
             tags: vec!["backend".to_string(), "rust".to_string()],
+            owner_agent_id: None,
             created_at: now_iso(),
             updated_at: now_iso(),
         }])
@@ -1377,6 +1580,7 @@ mod memory_store_tests {
             judgment: "删除测试样本".to_string(),
             reasoning: "delete".to_string(),
             tags: vec!["删除".to_string(), "样本".to_string()],
+            owner_agent_id: None,
         }];
         let (saved, total) = memory_store_upsert_drafts(&data_path, &drafts).expect("seed");
         assert_eq!(total, 1);
@@ -1408,6 +1612,7 @@ mod memory_store_tests {
                 judgment: "Use sqlite for truth source".to_string(),
                 reasoning: "".to_string(),
                 tags: vec!["sqlite".to_string()],
+                owner_agent_id: None,
             }],
         )
         .expect("seed memory");
@@ -1447,6 +1652,7 @@ mod memory_store_tests {
                 judgment: "Document A".to_string(),
                 reasoning: "".to_string(),
                 tags: vec!["a".to_string()],
+                owner_agent_id: None,
             }],
         )
         .expect("seed memory");
@@ -1502,6 +1708,7 @@ mod memory_store_tests {
                 judgment: "Backup target memory".to_string(),
                 reasoning: "".to_string(),
                 tags: vec!["backup".to_string()],
+                owner_agent_id: None,
             }],
         )
         .expect("seed memory");
@@ -1532,18 +1739,21 @@ mod memory_store_tests {
                 judgment: "用户偏好深色主题的编辑器风格".to_string(),
                 reasoning: "UI偏好".to_string(),
                 tags: vec!["风格".to_string(), "编辑器".to_string(), "偏好".to_string()],
+                owner_agent_id: None,
             },
             MemoryDraftInput {
                 memory_type: "skill".to_string(),
                 judgment: "写代码时风格偏简洁，不喜欢过度抽象".to_string(),
                 reasoning: "编码习惯".to_string(),
                 tags: vec!["风格".to_string(), "代码".to_string()],
+                owner_agent_id: None,
             },
             MemoryDraftInput {
                 memory_type: "event".to_string(),
                 judgment: "今天讨论了项目架构的风格问题".to_string(),
                 reasoning: "事件记录".to_string(),
                 tags: vec!["架构".to_string(), "风格".to_string()],
+                owner_agent_id: None,
             },
         ];
         let (saved, total) = memory_store_upsert_drafts(&data_path, &drafts).expect("seed");
@@ -1565,18 +1775,21 @@ mod memory_store_tests {
                 judgment: "Rust Rust Rust 适合做高性能后端架构".to_string(),
                 reasoning: "高频词样本".to_string(),
                 tags: vec!["偏好".to_string()],
+                owner_agent_id: None,
             },
             MemoryDraftInput {
                 memory_type: "knowledge".to_string(),
                 judgment: "Rust 也常用于工具链开发".to_string(),
                 reasoning: "低频词样本".to_string(),
                 tags: vec!["习惯".to_string()],
+                owner_agent_id: None,
             },
             MemoryDraftInput {
                 memory_type: "event".to_string(),
                 judgment: "今天讨论的是数据库迁移方案".to_string(),
                 reasoning: "无关样本".to_string(),
                 tags: vec!["会议".to_string()],
+                owner_agent_id: None,
             },
         ];
         let (saved, total) = memory_store_upsert_drafts(&data_path, &drafts).expect("seed");
@@ -1619,12 +1832,14 @@ mod memory_store_tests {
                 judgment: "我最喜欢的角色是遥酱，她的语气很温柔。".to_string(),
                 reasoning: "".to_string(),
                 tags: vec!["遥酱".to_string(), "偏好".to_string()],
+                owner_agent_id: None,
             },
             MemoryDraftInput {
                 memory_type: "knowledge".to_string(),
                 judgment: "今天复习了Rust生命周期".to_string(),
                 reasoning: "".to_string(),
                 tags: vec!["rust".to_string()],
+                owner_agent_id: None,
             },
         ];
         let (saved, total) = memory_store_upsert_drafts(&data_path, &drafts).expect("seed");
@@ -1694,6 +1909,7 @@ mod memory_store_tests {
                 judgment: "Do something".to_string(),
                 reasoning: "todo".to_string(),
                 tags: vec!["todo".to_string()],
+                owner_agent_id: None,
             }],
         );
         assert!(result.is_err());
