@@ -164,6 +164,9 @@
                             class="badge badge-sm"
                             :class="memoryTypeBadgeClass(memory.memoryType)"
                           >{{ memoryTypeLabel(memory.memoryType) }}</span>
+                          <span class="badge badge-sm badge-outline">
+                            {{ memory.ownerAgentId ? `私有:${ownerAgentName(memory.ownerAgentId)}` : "全局" }}
+                          </span>
                           <span class="opacity-50">{{ formatMemoryTime(memory.updatedAt || memory.createdAt) }}</span>
                           <span v-for="(kw, idx) in memory.tags" :key="`${memory.id}-${idx}`" class="badge badge-sm badge-neutral opacity-80">
                             {{ kw }}
@@ -233,6 +236,7 @@ type MemoryEntry = {
   judgment: string;
   reasoning: string;
   tags: string[];
+  ownerAgentId?: string;
   createdAt: string;
   updatedAt: string;
   bm25Score?: number;
@@ -264,6 +268,11 @@ type AppConfigLite = {
   apiConfigs: ApiConfigLite[];
 };
 
+type PersonaLite = {
+  id: string;
+  name: string;
+};
+
 const { t } = useI18n();
 const props = withDefaults(defineProps<{ syncLocked?: boolean }>(), {
   syncLocked: false,
@@ -284,6 +293,7 @@ const embeddingLastPassedTestKey = ref("");
 const rerankLastPassedTestKey = ref("");
 const importInputRef = ref<HTMLInputElement | null>(null);
 const apiConfigs = ref<ApiConfigLite[]>([]);
+const personaNameMap = ref<Record<string, string>>({});
 const syncProgressDone = ref(0);
 const syncProgressTotal = ref(0);
 const syncProgressStatus = ref("idle");
@@ -367,6 +377,12 @@ function memoryTypeLabel(type: string): string {
     event: "事件",
   };
   return labels[type] || type;
+}
+
+function ownerAgentName(agentId: string): string {
+  const id = String(agentId || "").trim();
+  if (!id) return "已删除人格";
+  return personaNameMap.value[id] || "已删除人格";
 }
 
 function formatMemoryTime(iso: string): string {
@@ -605,6 +621,19 @@ async function loadApiConfigs() {
   apiConfigs.value = Array.isArray(cfg.apiConfigs) ? cfg.apiConfigs : [];
 }
 
+async function loadPersonaNames() {
+  const agents = await withLoading(() => invokeTauri<PersonaLite[]>("load_agents"));
+  if (!agents) return;
+  const next: Record<string, string> = {};
+  for (const agent of agents) {
+    const id = String(agent.id || "").trim();
+    if (!id) continue;
+    const name = String(agent.name || "").trim();
+    next[id] = name || id;
+  }
+  personaNameMap.value = next;
+}
+
 async function loadBindings() {
   const result = await withLoading(() =>
     invokeTauri<{ embeddingApiConfigId?: string; rerankApiConfigId?: string }>("get_memory_provider_bindings"),
@@ -615,6 +644,7 @@ async function loadBindings() {
 }
 
 onMounted(() => {
+  void loadPersonaNames();
   void loadApiConfigs();
   void loadBindings();
   void refreshMemories();

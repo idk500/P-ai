@@ -54,6 +54,7 @@ export type PersonaProfile = {
   id: string;
   name: string;
   systemPrompt: string;
+  privateMemoryEnabled?: boolean;
   createdAt: string;
   updatedAt: string;
   avatarPath?: string;

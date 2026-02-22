@@ -86,6 +86,7 @@
           @add-persona="$emit('addPersona')"
           @remove-selected-persona="$emit('removeSelectedPersona')"
           @open-avatar-editor="openAvatarEditorForSelected"
+          @import-persona-memories="$emit('importPersonaMemories', $event)"
         />
 
         <ChatSettingsTab
@@ -259,6 +260,7 @@ const emit = defineEmits<{
   (e: "saveApiConfig"): void;
   (e: "addPersona"): void;
   (e: "removeSelectedPersona"): void;
+  (e: "importPersonaMemories", value: { agentId: string; file: File }): void;
   (e: "openCurrentHistory"): void;
   (e: "openPromptPreview"): void;
   (e: "openSystemPromptPreview"): void;

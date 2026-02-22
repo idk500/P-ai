@@ -282,7 +282,17 @@ async fn send_chat_message(
                 .cloned()
                 .ok_or_else(|| "Selected agent not found.".to_string())?;
             let user_alias = data.user_alias.clone();
-            let memories = memory_store_list_memories(&state.data_path)?;
+            let private_memory_enabled = data
+                .agents
+                .iter()
+                .find(|a| a.id == effective_agent_id)
+                .map(|a| a.private_memory_enabled)
+                .unwrap_or(false);
+            let memories = memory_store_list_memories_visible_for_agent(
+                &state.data_path,
+                &effective_agent_id,
+                private_memory_enabled,
+            )?;
             drop(guard);
 
             match summarize_archived_conversation_with_model(
@@ -322,8 +332,13 @@ async fn send_chat_message(
                         &selected_api.id,
                         &effective_agent_id,
                     );
+                    let owner_agent_id = data
+                        .agents
+                        .iter()
+                        .find(|a| a.id == source.agent_id && !a.is_built_in_user && a.private_memory_enabled)
+                        .map(|a| a.id.as_str());
                     let memory_merged =
-                        merge_memories_into_store(&state.data_path, &summary_memories)?;
+                        merge_memories_into_store(&state.data_path, &summary_memories, owner_agent_id)?;
                     eprintln!(
                         "[ARCHIVE] archived ok. conversation_id={}, reason={}, summary_len={}, merged_memories={}",
                         source.id,
@@ -439,7 +454,17 @@ async fn send_chat_message(
         externalize_message_parts_to_media_refs(&mut user_parts, &state.data_path)?;
         let conversation_before = data.conversations[idx].clone();
         let recall_query_text = memory_recall_query_text(&conversation_before, &effective_user_text);
-        let store_memories = memory_store_list_memories(&state.data_path)?;
+        let private_memory_enabled = data
+            .agents
+            .iter()
+            .find(|a| a.id == effective_agent_id)
+            .map(|a| a.private_memory_enabled)
+            .unwrap_or(false);
+        let store_memories = memory_store_list_memories_visible_for_agent(
+            &state.data_path,
+            &effective_agent_id,
+            private_memory_enabled,
+        )?;
         let recall_hit_ids =
             memory_recall_hit_ids(&state.data_path, &store_memories, &recall_query_text);
 

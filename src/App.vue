@@ -119,6 +119,7 @@
       :remove-selected-api-config="removeSelectedApiConfig"
       :add-persona="addPersona"
       :remove-selected-persona="removeSelectedPersona"
+      :import-persona-memories="importPersonaMemories"
       :open-current-history="openCurrentHistory"
       :open-prompt-preview="openPromptPreview"
       :open-system-prompt-preview="openSystemPromptPreview"
@@ -994,6 +995,32 @@ async function prepareArchiveImport(file: File) {
     archiveImportPreviewDialogOpen.value = true;
   } catch (e) {
     setStatusError("status.importArchiveFailed", e);
+  }
+}
+
+async function importPersonaMemories(payload: { agentId: string; file: File }) {
+  const agentId = String(payload.agentId || "").trim();
+  if (!agentId) return;
+  try {
+    const text = await payload.file.text();
+    const parsed = JSON.parse(text) as unknown;
+    const memories = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === "object" && Array.isArray((parsed as { memories?: unknown }).memories)
+        ? (parsed as { memories: unknown[] }).memories
+        : null;
+    if (!Array.isArray(memories)) {
+      throw new Error("无效的记忆文件格式");
+    }
+    const result = await invokeTauri<{ importedCount: number; createdCount: number; mergedCount: number; totalCount: number }>(
+      "import_agent_memories",
+      {
+        input: { agentId, memories },
+      },
+    );
+    setStatus(`人格记忆导入完成: 新增 ${result.createdCount} 条, 合并 ${result.mergedCount} 条, 总计 ${result.totalCount} 条`);
+  } catch (e) {
+    setStatusError("status.importMemoriesFailed", e);
   }
 }
 

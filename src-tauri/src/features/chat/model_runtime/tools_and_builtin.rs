@@ -776,6 +776,19 @@ fn upsert_memories(
     app_state: &AppState,
     drafts: &[MemorySaveDraft],
 ) -> Result<(Vec<MemorySaveUpsertItemResult>, usize), String> {
+    let owner_agent_id = {
+        let guard = app_state
+            .state_lock
+            .lock()
+            .map_err(|_| "Failed to lock state mutex".to_string())?;
+        let mut data = read_app_data(&app_state.data_path)?;
+        ensure_default_agent(&mut data);
+        drop(guard);
+        data.agents
+            .iter()
+            .find(|a| a.id == data.selected_agent_id && !a.is_built_in_user && a.private_memory_enabled)
+            .map(|a| a.id.clone())
+    };
     let inputs = drafts
         .iter()
         .map(|d| MemoryDraftInput {
@@ -783,6 +796,7 @@ fn upsert_memories(
             judgment: d.judgment.clone(),
             reasoning: d.reasoning.clone(),
             tags: d.tags.clone(),
+            owner_agent_id: owner_agent_id.clone(),
         })
         .collect::<Vec<_>>();
     let (results, total_memories) = memory_store_upsert_drafts(&app_state.data_path, &inputs)?;

@@ -39,6 +39,12 @@ fn memory_run_async<F, T>(future: F) -> Result<T, String>
 where
     F: std::future::Future<Output = Result<T, String>>,
 {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // Already inside Tokio runtime: run this sync bridge in a blocking section
+        // and drive the future with the current runtime handle.
+        return tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future));
+    }
+
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
