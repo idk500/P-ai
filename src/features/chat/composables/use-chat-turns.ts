@@ -18,6 +18,17 @@ type UseChatTurnsOptions = {
 };
 
 export function useChatTurns(options: UseChatTurnsOptions) {
+  function resolveAssistantAgentId(message: ChatMessage): string {
+    const direct = String(message.speakerAgentId || "").trim();
+    if (direct) return direct;
+    const meta = (message.providerMeta || {}) as Record<string, unknown>;
+    for (const key of ["speakerAgentId", "speaker_agent_id", "agentId", "agent_id"]) {
+      const value = String(meta[key] || "").trim();
+      if (value) return value;
+    }
+    return "";
+  }
+
   function summarizeAssistantToolHistory(
     toolHistory: ChatMessage["toolCall"],
   ): { count: number; lastToolName: string } {
@@ -53,6 +64,7 @@ export function useChatTurns(options: UseChatTurnsOptions) {
         let assistantReasoningInline = "";
         let assistantToolCallCount = 0;
         let assistantLastToolName = "";
+        let assistantAgentId = "";
         if (i + 1 < msgs.length && msgs[i + 1].role === "assistant") {
           const assistantMsg = msgs[i + 1];
           const parsed = parseAssistantStoredText(renderMessage(assistantMsg));
@@ -63,6 +75,7 @@ export function useChatTurns(options: UseChatTurnsOptions) {
           assistantReasoningInline = parsed.reasoningInline || String(providerMeta.reasoningInline || "");
           assistantToolCallCount = toolSummary.count;
           assistantLastToolName = toolSummary.lastToolName;
+          assistantAgentId = resolveAssistantAgentId(assistantMsg);
           i++;
         }
         if (
@@ -75,6 +88,7 @@ export function useChatTurns(options: UseChatTurnsOptions) {
         ) {
           turns.push({
             id: msg.id,
+            assistantAgentId,
             userText,
             userImages,
             userAudios,
