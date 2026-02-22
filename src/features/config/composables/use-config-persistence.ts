@@ -141,6 +141,24 @@ export function useConfigPersistence(options: UseConfigPersistenceOptions) {
             }))
             .filter((v) => v.name && v.path)
         : [];
+      options.config.mcpServers = Array.isArray(cfg.mcpServers)
+        ? cfg.mcpServers.map((v) => ({
+            id: String((v as { id?: unknown })?.id || "").trim(),
+            name: String((v as { name?: unknown })?.name || "").trim(),
+            enabled: !!(v as { enabled?: unknown })?.enabled,
+            definitionJson: String((v as { definitionJson?: unknown })?.definitionJson || "").trim(),
+            toolPolicies: Array.isArray((v as { toolPolicies?: unknown[] })?.toolPolicies)
+              ? ((v as { toolPolicies?: unknown[] }).toolPolicies || []).map((p) => ({
+                  toolName: String((p as { toolName?: unknown })?.toolName || "").trim(),
+                  enabled: !!(p as { enabled?: unknown })?.enabled,
+                  description: String((p as { description?: unknown })?.description || "").trim(),
+                }))
+              : [],
+            lastStatus: String((v as { lastStatus?: unknown })?.lastStatus || "").trim(),
+            lastError: String((v as { lastError?: unknown })?.lastError || "").trim(),
+            updatedAt: String((v as { updatedAt?: unknown })?.updatedAt || "").trim(),
+          }))
+        : [];
       options.config.apiConfigs.splice(
         0,
         options.config.apiConfigs.length,
@@ -185,6 +203,24 @@ export function useConfigPersistence(options: UseConfigPersistenceOptions) {
               builtIn: !!(v as { builtIn?: unknown })?.builtIn,
             }))
             .filter((v) => v.name && v.path)
+        : [];
+      options.config.mcpServers = Array.isArray(saved.mcpServers)
+        ? saved.mcpServers.map((v) => ({
+            id: String((v as { id?: unknown })?.id || "").trim(),
+            name: String((v as { name?: unknown })?.name || "").trim(),
+            enabled: !!(v as { enabled?: unknown })?.enabled,
+            definitionJson: String((v as { definitionJson?: unknown })?.definitionJson || "").trim(),
+            toolPolicies: Array.isArray((v as { toolPolicies?: unknown[] })?.toolPolicies)
+              ? ((v as { toolPolicies?: unknown[] }).toolPolicies || []).map((p) => ({
+                  toolName: String((p as { toolName?: unknown })?.toolName || "").trim(),
+                  enabled: !!(p as { enabled?: unknown })?.enabled,
+                  description: String((p as { description?: unknown })?.description || "").trim(),
+                }))
+              : [],
+            lastStatus: String((v as { lastStatus?: unknown })?.lastStatus || "").trim(),
+            lastError: String((v as { lastError?: unknown })?.lastError || "").trim(),
+            updatedAt: String((v as { updatedAt?: unknown })?.updatedAt || "").trim(),
+          }))
         : [];
       options.config.apiConfigs.splice(0, options.config.apiConfigs.length, ...saved.apiConfigs);
       options.normalizeApiBindingsLocal();

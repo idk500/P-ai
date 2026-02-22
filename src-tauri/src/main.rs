@@ -12,7 +12,6 @@ use directories::ProjectDirs;
 use futures_util::{future::AbortHandle, StreamExt};
 use image::ImageFormat;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
-use rmcp::{ServiceExt, schemars};
 use rig::{
     completion::{
         message::{AudioMediaType, DocumentMediaType, ImageDetail, ImageMediaType, UserContent},
@@ -25,6 +24,7 @@ use rig::{
     tool::{Tool, ToolDyn},
     OneOrMany,
 };
+use rmcp::{schemars, ServiceExt};
 use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -37,7 +37,6 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use uuid::Uuid;
-
 
 // ==================== 核心领域模型 ====================
 include!("features/core/domain.rs");
@@ -59,6 +58,9 @@ include!("features/system/tools.rs");
 include!("features/memory/store.rs");
 include!("features/memory/matcher.rs");
 include!("features/memory/providers.rs");
+
+// ==================== MCP ====================
+include!("features/mcp.rs");
 
 include!("features/system/commands.rs");
 
@@ -220,6 +222,15 @@ fn main() {
             lock_chat_shell_workspace,
             unlock_chat_shell_workspace,
             resolve_terminal_approval
+            ,
+            mcp_list_servers,
+            mcp_validate_definition,
+            mcp_save_server,
+            mcp_remove_server,
+            mcp_deploy_server,
+            mcp_undeploy_server,
+            mcp_list_server_tools,
+            mcp_set_tool_enabled
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|err| {

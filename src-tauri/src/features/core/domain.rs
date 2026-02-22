@@ -278,6 +278,39 @@ struct ShellWorkspaceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct McpToolPolicy {
+    tool_name: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerConfig {
+    id: String,
+    name: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    #[serde(default)]
+    definition_json: String,
+    #[serde(default)]
+    tool_policies: Vec<McpToolPolicy>,
+    #[serde(default)]
+    last_status: String,
+    #[serde(default)]
+    last_error: String,
+    #[serde(default)]
+    updated_at: String,
+}
+
+fn default_mcp_servers() -> Vec<McpServerConfig> {
+    Vec::new()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApiConfig {
     id: String,
     name: String,
@@ -379,6 +412,8 @@ struct AppConfig {
     stt_auto_send: bool,
     #[serde(default)]
     shell_workspaces: Vec<ShellWorkspaceConfig>,
+    #[serde(default = "default_mcp_servers")]
+    mcp_servers: Vec<McpServerConfig>,
     api_configs: Vec<ApiConfig>,
 }
 
@@ -398,6 +433,7 @@ impl Default for AppConfig {
             stt_api_config_id: None,
             stt_auto_send: false,
             shell_workspaces: Vec::new(),
+            mcp_servers: default_mcp_servers(),
             api_configs: vec![api_config],
         }
     }

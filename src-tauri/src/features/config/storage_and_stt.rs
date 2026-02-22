@@ -198,6 +198,54 @@ fn normalize_shell_workspaces(config: &mut AppConfig) {
     config.shell_workspaces = normalized;
 }
 
+fn normalize_mcp_servers(config: &mut AppConfig) {
+    let mut out = Vec::<McpServerConfig>::new();
+    let mut seen = std::collections::HashSet::<String>::new();
+    for raw in &config.mcp_servers {
+        let id = raw.id.trim().to_string();
+        let mut name = raw.name.trim().to_string();
+        let definition_json = raw.definition_json.trim().to_string();
+        if id.is_empty() || definition_json.is_empty() {
+            continue;
+        }
+        let key = id.to_ascii_lowercase();
+        if !seen.insert(key) {
+            continue;
+        }
+        if name.is_empty() {
+            name = id.clone();
+        }
+        let mut tool_policies = Vec::<McpToolPolicy>::new();
+        let mut seen_tools = std::collections::HashSet::<String>::new();
+        for policy in &raw.tool_policies {
+            let tool_name = policy.tool_name.trim().to_string();
+            if tool_name.is_empty() {
+                continue;
+            }
+            let tool_key = tool_name.to_ascii_lowercase();
+            if !seen_tools.insert(tool_key) {
+                continue;
+            }
+            tool_policies.push(McpToolPolicy {
+                tool_name,
+                enabled: policy.enabled,
+                description: policy.description.trim().to_string(),
+            });
+        }
+        out.push(McpServerConfig {
+            id,
+            name,
+            enabled: raw.enabled,
+            definition_json,
+            tool_policies,
+            last_status: raw.last_status.trim().to_string(),
+            last_error: raw.last_error.trim().to_string(),
+            updated_at: raw.updated_at.trim().to_string(),
+        });
+    }
+    config.mcp_servers = out;
+}
+
 fn normalize_app_config(config: &mut AppConfig) {
     if config.api_configs.is_empty() {
         *config = AppConfig::default();
@@ -286,6 +334,7 @@ fn normalize_app_config(config: &mut AppConfig) {
         config.stt_auto_send = false;
     }
     normalize_shell_workspaces(config);
+    normalize_mcp_servers(config);
 }
 
 const MEDIA_REF_PREFIX: &str = "@media:";
