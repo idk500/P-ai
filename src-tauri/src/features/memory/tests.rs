@@ -20,6 +20,7 @@
                 reasoning: "".to_string(),
                 tags: vec!["hello".to_string()],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
             MemoryEntry {
@@ -29,6 +30,7 @@
                 reasoning: "".to_string(),
                 tags: vec!["k99".to_string()],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
         ];
@@ -67,6 +69,7 @@
                     "k08".to_string(),
                 ],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
             MemoryEntry {
@@ -84,6 +87,7 @@
                     "k07".to_string(),
                 ],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
             MemoryEntry {
@@ -100,6 +104,7 @@
                     "k06".to_string(),
                 ],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
             MemoryEntry {
@@ -115,6 +120,7 @@
                     "k05".to_string(),
                 ],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
             MemoryEntry {
@@ -129,6 +135,7 @@
                     "k04".to_string(),
                 ],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
             MemoryEntry {
@@ -138,6 +145,7 @@
                 reasoning: "".to_string(),
                 tags: vec!["k01".to_string(), "k02".to_string(), "k03".to_string()],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
             MemoryEntry {
@@ -147,6 +155,7 @@
                 reasoning: "".to_string(),
                 tags: vec!["k01".to_string(), "k02".to_string()],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
             MemoryEntry {
@@ -156,6 +165,7 @@
                 reasoning: "".to_string(),
                 tags: vec!["k01".to_string()],
                 created_at: now_iso(),
+                owner_agent_id: None,
                 updated_at: now_iso(),
             },
         ];
@@ -189,6 +199,7 @@
             reasoning: "用户多次要求简短".to_string(),
             tags: vec!["偏好".to_string(), "简洁".to_string()],
             created_at: now_iso(),
+            owner_agent_id: None,
             updated_at: now_iso(),
         }];
 
@@ -213,6 +224,7 @@
             reasoning: "".to_string(),
             tags: vec!["记忆".to_string()],
             created_at: now_iso(),
+            owner_agent_id: None,
             updated_at: now_iso(),
         }];
 
@@ -258,3 +270,5 @@
             ]
         );
     }
+
+

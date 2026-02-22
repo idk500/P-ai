@@ -625,6 +625,8 @@ struct AgentProfile {
     avatar_updated_at: Option<String>,
     #[serde(default)]
     is_built_in_user: bool,
+    #[serde(default)]
+    private_memory_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -734,6 +736,8 @@ struct MemoryEntry {
     reasoning: String,
     #[serde(default, alias = "keywords")]
     tags: Vec<String>,
+    #[serde(default)]
+    owner_agent_id: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -964,6 +968,7 @@ fn default_agent() -> AgentProfile {
         avatar_path: None,
         avatar_updated_at: None,
         is_built_in_user: false,
+        private_memory_enabled: false,
     }
 }
 
@@ -978,6 +983,7 @@ fn default_user_persona() -> AgentProfile {
         avatar_path: None,
         avatar_updated_at: None,
         is_built_in_user: true,
+        private_memory_enabled: false,
     }
 }
 

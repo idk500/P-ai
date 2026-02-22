@@ -159,6 +159,7 @@ fn save_agents(
         .map_err(|_| "Failed to lock state mutex".to_string())?;
 
     let mut data = read_app_data(&state.data_path)?;
+    let previous_agents = data.agents.clone();
     let existing_user_persona = data
         .agents
         .iter()
@@ -171,9 +172,299 @@ fn save_agents(
         }
     }
     ensure_default_agent(&mut data);
+
+    let next_ids = data
+        .agents
+        .iter()
+        .map(|a| a.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let previous_by_id = previous_agents
+        .iter()
+        .map(|a| (a.id.clone(), a))
+        .collect::<std::collections::HashMap<_, _>>();
+    let removed_agent_ids = previous_agents
+        .iter()
+        .filter(|a| !a.is_built_in_user && a.id != USER_PERSONA_ID)
+        .filter(|a| !next_ids.contains(&a.id))
+        .map(|a| a.id.clone())
+        .collect::<Vec<_>>();
+    let disabled_private_memory_agent_ids = data
+        .agents
+        .iter()
+        .filter(|a| !a.is_built_in_user && a.id != USER_PERSONA_ID)
+        .filter(|a| {
+            previous_by_id
+                .get(&a.id)
+                .map(|old| old.private_memory_enabled && !a.private_memory_enabled)
+                .unwrap_or(false)
+        })
+        .map(|a| a.id.clone())
+        .collect::<Vec<_>>();
+
+    for agent_id in &removed_agent_ids {
+        let export = memory_store_export_agent_private_memories(&state.data_path, agent_id)?;
+        let deleted = memory_store_delete_memories_by_owner_agent_id(&state.data_path, agent_id)?;
+        eprintln!(
+            "[PERSONA] removed agent private memories exported+deleted. agent={}, exported={}, path={}, deleted={}",
+            agent_id, export.count, export.path, deleted
+        );
+    }
+    for agent_id in &disabled_private_memory_agent_ids {
+        let export = memory_store_export_agent_private_memories(&state.data_path, agent_id)?;
+        let deleted = memory_store_delete_memories_by_owner_agent_id(&state.data_path, agent_id)?;
+        eprintln!(
+            "[PERSONA] private memory disabled, exported+deleted. agent={}, exported={}, path={}, deleted={}",
+            agent_id, export.count, export.path, deleted
+        );
+    }
+
     write_app_data(&state.data_path, &data)?;
     drop(guard);
     Ok(data.agents)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportAgentMemoriesInput {
+    agent_id: String,
+    memories: Vec<MemoryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportAgentMemoriesResult {
+    imported_count: usize,
+    created_count: usize,
+    merged_count: usize,
+    total_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentPrivateMemoryCountInput {
+    agent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentPrivateMemoryCountResult {
+    count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetAgentPrivateMemoryEnabledInput {
+    agent_id: String,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetAgentPrivateMemoryEnabledResult {
+    agent_id: String,
+    enabled: bool,
+    exported_count: usize,
+    deleted_count: usize,
+    export_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportAgentPrivateMemoriesInput {
+    agent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportAgentPrivateMemoriesResult {
+    count: usize,
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DisableAgentPrivateMemoryInput {
+    agent_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DisableAgentPrivateMemoryResult {
+    agent_id: String,
+    enabled: bool,
+    deleted_count: usize,
+}
+
+#[tauri::command]
+fn get_agent_private_memory_count(
+    input: AgentPrivateMemoryCountInput,
+    state: State<'_, AppState>,
+) -> Result<AgentPrivateMemoryCountResult, String> {
+    let agent_id = input.agent_id.trim();
+    if agent_id.is_empty() {
+        return Err("agentId is required".to_string());
+    }
+    Ok(AgentPrivateMemoryCountResult {
+        count: memory_store_count_private_memories_by_agent(&state.data_path, agent_id)?,
+    })
+}
+
+#[tauri::command]
+fn set_agent_private_memory_enabled(
+    input: SetAgentPrivateMemoryEnabledInput,
+    state: State<'_, AppState>,
+) -> Result<SetAgentPrivateMemoryEnabledResult, String> {
+    let agent_id = input.agent_id.trim();
+    if agent_id.is_empty() {
+        return Err("agentId is required".to_string());
+    }
+
+    let guard = state
+        .state_lock
+        .lock()
+        .map_err(|_| "Failed to lock state mutex".to_string())?;
+    let mut data = read_app_data(&state.data_path)?;
+    ensure_default_agent(&mut data);
+
+    let agent_idx = data
+        .agents
+        .iter()
+        .position(|a| a.id == agent_id && !a.is_built_in_user)
+        .ok_or_else(|| format!("Agent '{}' not found.", agent_id))?;
+
+    let current = data.agents[agent_idx].private_memory_enabled;
+    if current == input.enabled {
+        drop(guard);
+        return Ok(SetAgentPrivateMemoryEnabledResult {
+            agent_id: agent_id.to_string(),
+            enabled: current,
+            exported_count: 0,
+            deleted_count: 0,
+            export_path: None,
+        });
+    }
+
+    if input.enabled {
+        data.agents[agent_idx].private_memory_enabled = true;
+        write_app_data(&state.data_path, &data)?;
+        drop(guard);
+        return Ok(SetAgentPrivateMemoryEnabledResult {
+            agent_id: agent_id.to_string(),
+            enabled: true,
+            exported_count: 0,
+            deleted_count: 0,
+            export_path: None,
+        });
+    }
+
+    let export = memory_store_export_agent_private_memories(&state.data_path, agent_id)?;
+    let deleted = memory_store_delete_memories_by_owner_agent_id(&state.data_path, agent_id)?;
+    data.agents[agent_idx].private_memory_enabled = false;
+    write_app_data(&state.data_path, &data)?;
+    drop(guard);
+
+    Ok(SetAgentPrivateMemoryEnabledResult {
+        agent_id: agent_id.to_string(),
+        enabled: false,
+        exported_count: export.count,
+        deleted_count: deleted,
+        export_path: Some(export.path),
+    })
+}
+
+#[tauri::command]
+fn export_agent_private_memories(
+    input: ExportAgentPrivateMemoriesInput,
+    state: State<'_, AppState>,
+) -> Result<ExportAgentPrivateMemoriesResult, String> {
+    let agent_id = input.agent_id.trim();
+    if agent_id.is_empty() {
+        return Err("agentId is required".to_string());
+    }
+    let export = memory_store_export_agent_private_memories(&state.data_path, agent_id)?;
+    Ok(ExportAgentPrivateMemoriesResult {
+        count: export.count,
+        path: export.path,
+    })
+}
+
+#[tauri::command]
+fn disable_agent_private_memory(
+    input: DisableAgentPrivateMemoryInput,
+    state: State<'_, AppState>,
+) -> Result<DisableAgentPrivateMemoryResult, String> {
+    let agent_id = input.agent_id.trim();
+    if agent_id.is_empty() {
+        return Err("agentId is required".to_string());
+    }
+
+    let guard = state
+        .state_lock
+        .lock()
+        .map_err(|_| "Failed to lock state mutex".to_string())?;
+    let mut data = read_app_data(&state.data_path)?;
+    ensure_default_agent(&mut data);
+
+    let agent_idx = data
+        .agents
+        .iter()
+        .position(|a| a.id == agent_id && !a.is_built_in_user)
+        .ok_or_else(|| format!("Agent '{}' not found.", agent_id))?;
+
+    if !data.agents[agent_idx].private_memory_enabled {
+        drop(guard);
+        return Ok(DisableAgentPrivateMemoryResult {
+            agent_id: agent_id.to_string(),
+            enabled: false,
+            deleted_count: 0,
+        });
+    }
+
+    let deleted = memory_store_delete_memories_by_owner_agent_id(&state.data_path, agent_id)?;
+    data.agents[agent_idx].private_memory_enabled = false;
+    write_app_data(&state.data_path, &data)?;
+    drop(guard);
+
+    Ok(DisableAgentPrivateMemoryResult {
+        agent_id: agent_id.to_string(),
+        enabled: false,
+        deleted_count: deleted,
+    })
+}
+
+#[tauri::command]
+fn import_agent_memories(
+    input: ImportAgentMemoriesInput,
+    state: State<'_, AppState>,
+) -> Result<ImportAgentMemoriesResult, String> {
+    let agent_id = input.agent_id.trim();
+    if agent_id.is_empty() {
+        return Err("agentId is required".to_string());
+    }
+
+    let guard = state
+        .state_lock
+        .lock()
+        .map_err(|_| "Failed to lock state mutex".to_string())?;
+    let mut data = read_app_data(&state.data_path)?;
+    ensure_default_agent(&mut data);
+    if !data
+        .agents
+        .iter()
+        .any(|a| a.id == agent_id && !a.is_built_in_user)
+    {
+        drop(guard);
+        return Err(format!("Agent '{}' not found.", agent_id));
+    }
+    drop(guard);
+
+    let stats = memory_store_import_memories_for_agent(&state.data_path, &input.memories, agent_id)?;
+    Ok(ImportAgentMemoriesResult {
+        imported_count: stats.imported_count,
+        created_count: stats.created_count,
+        merged_count: stats.merged_count,
+        total_count: stats.total_count,
+    })
 }
 
 #[tauri::command]

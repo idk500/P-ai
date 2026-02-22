@@ -8,6 +8,7 @@ type MemoryEntry = {
   judgment: string;
   reasoning: string;
   tags: string[];
+  ownerAgentId?: string;
   createdAt: string;
   updatedAt: string;
 };
