@@ -345,9 +345,10 @@ const config = reactive<AppConfig>({
   sttApiConfigId: undefined,
   sttAutoSend: false,
   shellWorkspaces: [],
+  mcpServers: [],
   apiConfigs: [],
 });
-const configTab = ref<"hotkey" | "api" | "tools" | "persona" | "chatSettings" | "memory" | "appearance" | "about">("hotkey");
+const configTab = ref<"hotkey" | "api" | "tools" | "mcp" | "persona" | "chatSettings" | "memory" | "appearance" | "about">("hotkey");
 const personas = ref<PersonaProfile[]>([]);
 const selectedPersonaId = ref("default-agent");
 const personaEditorId = ref("default-agent");

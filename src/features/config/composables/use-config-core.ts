@@ -159,6 +159,35 @@ export function useConfigCore(options: UseConfigCoreOptions) {
       });
     }
     options.config.shellWorkspaces = normalizedWorkspaces;
+    const seenMcpServerIds = new Set<string>();
+    const normalizedMcpServers = [];
+    for (const item of options.config.mcpServers || []) {
+      const id = String(item?.id || "").trim();
+      const definitionJson = String(item?.definitionJson || "").trim();
+      if (!id || !definitionJson) continue;
+      const key = id.toLowerCase();
+      if (seenMcpServerIds.has(key)) continue;
+      seenMcpServerIds.add(key);
+      normalizedMcpServers.push({
+        id,
+        name: String(item?.name || "").trim() || id,
+        enabled: !!item?.enabled,
+        definitionJson,
+        toolPolicies: Array.isArray(item?.toolPolicies)
+          ? item.toolPolicies
+              .map((p) => ({
+                toolName: String((p as { toolName?: unknown })?.toolName || "").trim(),
+                enabled: !!(p as { enabled?: unknown })?.enabled,
+                description: String((p as { description?: unknown })?.description || "").trim(),
+              }))
+              .filter((p) => !!p.toolName)
+          : [],
+        lastStatus: String((item as { lastStatus?: unknown })?.lastStatus || "").trim(),
+        lastError: String((item as { lastError?: unknown })?.lastError || "").trim(),
+        updatedAt: String((item as { updatedAt?: unknown })?.updatedAt || "").trim(),
+      });
+    }
+    options.config.mcpServers = normalizedMcpServers;
   }
 
   function buildConfigPayload(): AppConfig {
@@ -175,6 +204,7 @@ export function useConfigCore(options: UseConfigCoreOptions) {
       ...(options.config.sttApiConfigId ? { sttApiConfigId: options.config.sttApiConfigId } : {}),
       ...(options.config.sttAutoSend ? { sttAutoSend: true } : {}),
       shellWorkspaces: [...(options.config.shellWorkspaces || [])],
+      mcpServers: [...(options.config.mcpServers || [])],
       apiConfigs: options.config.apiConfigs.map((a) => ({
         id: a.id,
         name: a.name,
@@ -213,6 +243,7 @@ export function useConfigCore(options: UseConfigCoreOptions) {
       sttApiConfigId: options.config.sttApiConfigId,
       sttAutoSend: !!options.config.sttAutoSend,
       shellWorkspaces: [...(options.config.shellWorkspaces || [])],
+      mcpServers: [...(options.config.mcpServers || [])],
       apiConfigs: options.config.apiConfigs.map((a) => ({
         id: a.id,
         name: a.name,

@@ -39,6 +39,23 @@ export type ShellWorkspace = {
   builtIn?: boolean;
 };
 
+export type McpToolPolicy = {
+  toolName: string;
+  enabled: boolean;
+  description?: string;
+};
+
+export type McpServerConfig = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  definitionJson: string;
+  toolPolicies: McpToolPolicy[];
+  lastStatus?: string;
+  lastError?: string;
+  updatedAt?: string;
+};
+
 export type AppConfig = {
   hotkey: string;
   uiLanguage: "zh-CN" | "en-US" | "ja-JP" | "ko-KR";
@@ -53,7 +70,31 @@ export type AppConfig = {
   sttApiConfigId?: string;
   sttAutoSend?: boolean;
   shellWorkspaces: ShellWorkspace[];
+  mcpServers: McpServerConfig[];
   apiConfigs: ApiConfigItem[];
+};
+
+export type McpDefinitionValidateResult = {
+  ok: boolean;
+  transport?: string;
+  serverName?: string;
+  message: string;
+  schemaVersion?: string;
+  errorCode?: string;
+  details?: string[];
+  migratedDefinitionJson?: string;
+};
+
+export type McpToolDescriptor = {
+  toolName: string;
+  description: string;
+  enabled: boolean;
+};
+
+export type McpListServerToolsResult = {
+  serverId: string;
+  tools: McpToolDescriptor[];
+  elapsedMs: number;
 };
 
 export type PersonaProfile = {
