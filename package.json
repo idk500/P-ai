@@ -29,7 +29,7 @@
     "@tauri-apps/cli": "^2.0.0",
     "@vitejs/plugin-vue": "^5.2.1",
     "autoprefixer": "10.4.24",
-    "daisyui": "^4.12.24",
+    "daisyui": "^5.5.19",
     "postcss": "8.5.6",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
