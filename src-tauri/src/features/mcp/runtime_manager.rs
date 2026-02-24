@@ -13,6 +13,100 @@ fn mcp_client_cache(
     CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+#[derive(Debug, Clone)]
+struct McpRuntimeState {
+    deployed: bool,
+    last_status: String,
+    last_error: String,
+    updated_at: String,
+    tools: Vec<McpToolDescriptor>,
+}
+
+fn mcp_runtime_state_store() -> &'static Mutex<std::collections::HashMap<String, McpRuntimeState>> {
+    static STORE: OnceLock<Mutex<std::collections::HashMap<String, McpRuntimeState>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+fn mcp_runtime_state_get(server_id: &str) -> Option<McpRuntimeState> {
+    let Ok(guard) = mcp_runtime_state_store().lock() else {
+        return None;
+    };
+    guard.get(server_id).cloned()
+}
+
+fn mcp_runtime_state_set(
+    server_id: &str,
+    deployed: bool,
+    last_status: &str,
+    last_error: &str,
+    tools: Vec<McpToolDescriptor>,
+) {
+    let mut guard = match mcp_runtime_state_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!(
+                "[MCP] mcp_runtime_state_set lock poisoned for server_id={}: {}",
+                server_id, poisoned
+            );
+            poisoned.into_inner()
+        }
+    };
+    guard.insert(
+        server_id.to_string(),
+        McpRuntimeState {
+            deployed,
+            last_status: last_status.to_string(),
+            last_error: last_error.to_string(),
+            updated_at: now_iso(),
+            tools,
+        },
+    );
+}
+
+fn mcp_runtime_state_remove(server_id: &str) {
+    let mut guard = match mcp_runtime_state_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!(
+                "[MCP] mcp_runtime_state_remove lock poisoned for server_id={}: {}",
+                server_id, poisoned
+            );
+            poisoned.into_inner()
+        }
+    };
+    guard.remove(server_id);
+}
+
+fn mcp_runtime_state_update<F>(server_id: &str, update: F)
+where
+    F: FnOnce(&mut McpRuntimeState),
+{
+    let mut guard = match mcp_runtime_state_store().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!(
+                "[MCP] mcp_runtime_state_update lock poisoned for server_id={}: {}",
+                server_id, poisoned
+            );
+            poisoned.into_inner()
+        }
+    };
+    if let Some(runtime) = guard.get_mut(server_id) {
+        update(runtime);
+        runtime.updated_at = now_iso();
+    }
+}
+
+fn mcp_runtime_state_set_tool_enabled(server_id: &str, tool_name: &str, enabled: bool) {
+    mcp_runtime_state_update(server_id, |runtime| {
+        for tool in &mut runtime.tools {
+            if tool.tool_name == tool_name {
+                tool.enabled = enabled;
+            }
+        }
+    });
+}
+
 #[derive(Clone)]
 struct CustomStreamableHttpClient {
     client: reqwest::Client,
@@ -500,24 +594,18 @@ async fn mcp_list_server_tools_runtime(server: &McpServerConfig) -> Result<Vec<M
 async fn attach_enabled_mcp_tools_for_runtime(
     tools: &mut Vec<Box<dyn ToolDyn>>,
     app_state: Option<&AppState>,
-) -> Result<(Vec<DynamicMcpClient>, Vec<String>), String> {
+) -> Result<Vec<String>, String> {
     let Some(state) = app_state else {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(Vec::new());
     };
-    let config = {
-        let guard = state
-            .state_lock
-            .lock()
-            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-        let cfg = read_config(&state.config_path)?;
-        drop(guard);
-        cfg
-    };
+    let servers = load_workspace_mcp_servers(state)?;
 
-    let clients = Vec::<DynamicMcpClient>::new();
     let mut attached_tool_names = Vec::<String>::new();
-    for server in &config.mcp_servers {
-        if !server.enabled {
+    for server in &servers {
+        if !mcp_runtime_state_get(&server.id)
+            .map(|s| s.deployed)
+            .unwrap_or(false)
+        {
             continue;
         }
         if let Err(err) = parse_mcp_server_definition_from_config(server) {
@@ -548,5 +636,5 @@ async fn attach_enabled_mcp_tools_for_runtime(
         }
     }
 
-    Ok((clients, attached_tool_names))
+    Ok(attached_tool_names)
 }

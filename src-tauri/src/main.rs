@@ -61,6 +61,7 @@ include!("features/memory/providers.rs");
 
 // ==================== MCP ====================
 include!("features/mcp.rs");
+include!("features/skill.rs");
 
 include!("features/system/commands.rs");
 
@@ -180,6 +181,27 @@ fn main() {
                     let _ = window.set_focus();
                 }
             }
+            let startup_state = app_handle.state::<AppState>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                match mcp_redeploy_all_from_policy(&startup_state).await {
+                    Ok(errors) => {
+                        if errors.is_empty() {
+                            eprintln!("[BOOT] MCP auto redeploy completed");
+                        } else {
+                            eprintln!(
+                                "[BOOT] MCP auto redeploy completed with {} error(s)",
+                                errors.len()
+                            );
+                            for item in errors {
+                                eprintln!("[BOOT] MCP auto redeploy error: {} | {}", item.item, item.error);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("[BOOT] MCP auto redeploy failed: {err}");
+                    }
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -261,7 +283,12 @@ fn main() {
             mcp_deploy_server,
             mcp_undeploy_server,
             mcp_list_server_tools,
-            mcp_set_tool_enabled
+            mcp_list_server_tools_cached,
+            mcp_set_tool_enabled,
+            commands::mcp_refresh_mcp_and_skills,
+            commands::mcp_list_skills,
+            mcp_open_workspace_dir,
+            commands::skill_open_workspace_dir
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|err| {

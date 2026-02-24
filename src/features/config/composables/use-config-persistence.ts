@@ -151,6 +151,11 @@ export function useConfigPersistence(options: UseConfigPersistenceOptions) {
               ? ((v as { toolPolicies?: unknown[] }).toolPolicies || []).map((p) => ({
                   toolName: String((p as { toolName?: unknown })?.toolName || "").trim(),
                   enabled: !!(p as { enabled?: unknown })?.enabled,
+                }))
+              : [],
+            cachedTools: Array.isArray((v as { cachedTools?: unknown[] })?.cachedTools)
+              ? ((v as { cachedTools?: unknown[] }).cachedTools || []).map((p) => ({
+                  toolName: String((p as { toolName?: unknown })?.toolName || "").trim(),
                   description: String((p as { description?: unknown })?.description || "").trim(),
                 }))
               : [],
@@ -214,6 +219,11 @@ export function useConfigPersistence(options: UseConfigPersistenceOptions) {
               ? ((v as { toolPolicies?: unknown[] }).toolPolicies || []).map((p) => ({
                   toolName: String((p as { toolName?: unknown })?.toolName || "").trim(),
                   enabled: !!(p as { enabled?: unknown })?.enabled,
+                }))
+              : [],
+            cachedTools: Array.isArray((v as { cachedTools?: unknown[] })?.cachedTools)
+              ? ((v as { cachedTools?: unknown[] }).cachedTools || []).map((p) => ({
+                  toolName: String((p as { toolName?: unknown })?.toolName || "").trim(),
                   description: String((p as { description?: unknown })?.description || "").trim(),
                 }))
               : [],

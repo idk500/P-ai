@@ -6,7 +6,7 @@
         <select
           v-if="servers.length > 0"
           v-model="selectedServerId"
-          class="select select-bordered w-[clamp(14rem,40vw,34rem)] max-w-full"
+          class="select select-sm select-bordered w-[clamp(14rem,40vw,34rem)] max-w-full"
           :disabled="loading"
         >
           <option v-for="server in servers" :key="server.id" :value="server.id">
@@ -15,10 +15,13 @@
         </select>
       </div>
       <div class="flex items-center gap-2">
-        <button class="btn btn-xs bg-base-100 border-base-300 hover:bg-base-200" type="button" @click="reloadServers" :disabled="loading">{{ t('config.mcp.refresh') }}</button>
-        <button class="btn btn-xs btn-primary" type="button" @click="addServer">{{ t('config.mcp.add') }}</button>
+        <button class="btn btn-sm bg-base-100 border-base-300 hover:bg-base-200" type="button" @click="reloadServers" :disabled="loading">{{ t('config.mcp.refresh') }}</button>
+        <button class="btn btn-sm btn-primary" type="button" @click="openMcpDir" :disabled="loading">{{ t('config.mcp.openDir') }}</button>
+        <button class="btn btn-sm btn-primary" type="button" @click="addServer">{{ t('config.mcp.add') }}</button>
       </div>
     </div>
+
+    <div class="divider" v-if="servers.length > 0"></div>
 
     <div v-if="loading" class="text-xs opacity-70">{{ t('config.mcp.loading') }}</div>
 
@@ -120,7 +123,7 @@ async function reloadServers() {
     if (enabledServers.length > 0) {
       const results = await Promise.allSettled(
         enabledServers.map((server) =>
-          invokeTauri<McpListServerToolsResult>("mcp_list_server_tools", {
+          invokeTauri<McpListServerToolsResult>("mcp_list_server_tools_cached", {
             input: { serverId: server.id },
           }),
         ),
@@ -149,6 +152,7 @@ function addServer() {
     enabled: false,
     definitionJson: '{\n  "transport": "stdio",\n  "command": "npx",\n  "args": ["-y", "@upstash/context7-mcp"]\n}',
     toolPolicies: [],
+    cachedTools: [],
     lastStatus: "",
     lastError: "",
     updatedAt: "",
@@ -272,7 +276,7 @@ async function onToggleTool(payload: { serverId: string; toolName: string; enabl
 async function refreshTools(serverId: string) {
   loading.value = true;
   try {
-    const result = await invokeTauri<McpListServerToolsResult>("mcp_list_server_tools", {
+    const result = await invokeTauri<McpListServerToolsResult>("mcp_list_server_tools_cached", {
       input: { serverId },
     });
     const server = servers.value.find((s) => s.id === serverId);
@@ -283,6 +287,19 @@ async function refreshTools(serverId: string) {
     setStatus(t('config.mcp.loadedCount', { count: servers.value.length }));
   } catch (error) {
     setStatus(`${t('config.mcp.loadFailed')}: ${toErrorMessage(error)}`, true);
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function openMcpDir() {
+  if (loading.value) return;
+  loading.value = true;
+  try {
+    const opened = await invokeTauri<string>("mcp_open_workspace_dir");
+    setStatus(t("config.mcp.openDirOpened", { path: opened }));
+  } catch (error) {
+    setStatus(t("config.mcp.openDirFailed", { err: toErrorMessage(error) }), true);
   } finally {
     loading.value = false;
   }

@@ -7,7 +7,7 @@
         <button
           v-if="refreshable"
           type="button"
-          class="btn btn-xs"
+          class="btn btn-sm"
           :disabled="disabled"
           @click="emit('refresh')"
         >

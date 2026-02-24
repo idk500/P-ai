@@ -43,7 +43,11 @@ export type ShellWorkspace = {
 export type McpToolPolicy = {
   toolName: string;
   enabled: boolean;
-  description?: string;
+};
+
+export type McpCachedTool = {
+  toolName: string;
+  description: string;
 };
 
 export type McpServerConfig = {
@@ -52,6 +56,7 @@ export type McpServerConfig = {
   enabled: boolean;
   definitionJson: string;
   toolPolicies: McpToolPolicy[];
+  cachedTools?: McpCachedTool[];
   lastStatus?: string;
   lastError?: string;
   updatedAt?: string;
@@ -96,6 +101,31 @@ export type McpListServerToolsResult = {
   serverId: string;
   tools: McpToolDescriptor[];
   elapsedMs: number;
+};
+
+export type SkillSummaryItem = {
+  name: string;
+  description: string;
+  path: string;
+};
+
+export type SkillListResult = {
+  skills: SkillSummaryItem[];
+  errors: WorkspaceLoadError[];
+};
+
+export type WorkspaceLoadError = {
+  item: string;
+  error: string;
+};
+
+export type RefreshMcpAndSkillsResult = {
+  mcpLoaded: string[];
+  mcpFailed: WorkspaceLoadError[];
+  skillsLoaded: string[];
+  skillsFailed: WorkspaceLoadError[];
+  skills: SkillSummaryItem[];
+  skillSummary: string;
 };
 
 export type LlmRoundLogHeader = {

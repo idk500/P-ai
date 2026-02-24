@@ -2,9 +2,9 @@
   <div>
     <div class="space-y-3">
       <div class="flex items-center gap-2">
-        <button class="btn btn-xs bg-base-100" type="button" :disabled="disabled" @click="emitValidate">{{ t('config.mcpServerCard.validate') }}</button>
+        <button class="btn btn-sm bg-base-100" type="button" :disabled="disabled" @click="emitValidate">{{ t('config.mcpServerCard.validate') }}</button>
         <button
-          class="btn btn-xs"
+          class="btn btn-sm"
           :class="draft.enabled ? 'btn-warning' : 'btn-success'"
           type="button"
           :disabled="disabled"
@@ -15,7 +15,7 @@
         <div class="flex-1 rounded-md border border-base-300 bg-base-100 px-3 py-1.5 text-sm leading-5">
           {{ draft.name || t('config.mcpServerCard.displayNamePlaceholder') }}
         </div>
-        <button class="btn btn-xs btn-warning" type="button" :disabled="disabled" @click="$emit('remove', draft.id)">{{ t('config.mcpServerCard.delete') }}</button>
+        <button class="btn btn-sm btn-warning" type="button" :disabled="disabled" @click="$emit('remove', draft.id)">{{ t('config.mcpServerCard.delete') }}</button>
       </div>
 
       <div class="collapse collapse-arrow bg-base-100 border-base-300 border">

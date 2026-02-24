@@ -2,10 +2,7 @@ const MCP_SCREENSHOT_SERVER_FLAG: &str = "--mcp-screenshot-server";
 const MCP_SCREENSHOT_TOOL_NAME: &str = "desktop_screenshot";
 
 #[derive(Debug, Clone, serde::Deserialize, rmcp::schemars::JsonSchema)]
-struct McpDesktopScreenshotArgs {
-    #[serde(default)]
-    webp_quality: Option<f32>,
-}
+struct McpDesktopScreenshotArgs {}
 
 #[derive(Debug, Clone)]
 struct DesktopScreenshotMcpServer {
@@ -28,7 +25,7 @@ impl DesktopScreenshotMcpServer {
     )]
     async fn desktop_screenshot(
         &self,
-        rmcp::handler::server::wrapper::Parameters(args): rmcp::handler::server::wrapper::Parameters<
+        rmcp::handler::server::wrapper::Parameters(_args): rmcp::handler::server::wrapper::Parameters<
             McpDesktopScreenshotArgs,
         >,
     ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
@@ -37,7 +34,7 @@ impl DesktopScreenshotMcpServer {
             monitor_id: None,
             region: None,
             save_path: None,
-            webp_quality: normalize_webp_quality(args.webp_quality),
+            webp_quality: 75.0,
         };
         let res = run_screenshot_tool(request).await.map_err(|err| {
             rmcp::ErrorData::internal_error(
