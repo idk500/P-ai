@@ -220,6 +220,7 @@ function toolDescription(id: string): string {
   if (id === "desktop-wait") return t("config.tools.descDesktopWait");
   if (id === "shell-exec") return t("config.tools.descTerminalExec");
   if (id === "shell-switch-workspace") return t("config.tools.descTerminalPathAccess");
+  if (id === "refresh-mcp-skills") return t("config.tools.descRefreshMcpSkills");
   return t("config.tools.descGeneric");
 }
 

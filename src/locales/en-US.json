@@ -18,6 +18,7 @@
       "hotkey": "Hotkey",
       "api": "LLM",
       "tools": "Tools",
+      "skill": "Skill",
       "persona": "Persona",
       "chatSettings": "Chat",
       "memory": "Memory",
@@ -113,6 +114,7 @@
       "descDesktopWait": "Pause by milliseconds to control action pacing.",
       "descTerminalExec": "Run one stateless terminal command in controlled workspace.",
       "descTerminalPathAccess": "Set terminal root directory for current session (outside root is blocked).",
+      "descRefreshMcpSkills": "Refresh MCP and skill from llm-workspace and return latest summary.",
       "descGeneric": "General tool capability.",
       "shellWorkspace": "Shell Workspace",
       "newWorkspace": "New",
@@ -251,7 +253,10 @@
       "toolSwitchFailed": "Tool switch failed",
       "saved": "Saved: {name}",
       "deleted": "Deleted: {id}",
-      "transport": "transport={transport}"
+      "transport": "transport={transport}",
+      "openDir": "Open Directory",
+      "openDirOpened": "Opened directory: {path}",
+      "openDirFailed": "Failed to open directory: {err}"
     },
     "mcpServerCard": {
       "displayNamePlaceholder": "Display Name",
@@ -261,8 +266,8 @@
       "configPlaceholder": "Enter MCP JSON, e.g. {\"transport\":\"stdio\",\"command\":\"npx\",\"args\":[\"-y\",\"@upstash/context7-mcp\"]}",
       "status": "Status:",
       "validate": "Validate",
-      "stop": "Stop",
-      "deploy": "Deploy"
+      "stop": "Disable and Stop",
+      "deploy": "Enable and Deploy"
     },
     "mcpToolList": {
       "toolList": "Tool List",

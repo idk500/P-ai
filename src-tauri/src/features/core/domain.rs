@@ -272,6 +272,13 @@ fn default_api_tools() -> Vec<ApiToolConfig> {
             enabled: false,
             values: serde_json::json!({}),
         },
+        ApiToolConfig {
+            id: "refresh-mcp-skills".to_string(),
+            command: "builtin".to_string(),
+            args: vec!["refresh-mcp-skills".to_string()],
+            enabled: true,
+            values: serde_json::json!({}),
+        },
     ]
 }
 
@@ -290,6 +297,12 @@ struct McpToolPolicy {
     tool_name: String,
     #[serde(default = "default_true")]
     enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct McpCachedTool {
+    tool_name: String,
     #[serde(default)]
     description: String,
 }
@@ -305,6 +318,8 @@ struct McpServerConfig {
     definition_json: String,
     #[serde(default)]
     tool_policies: Vec<McpToolPolicy>,
+    #[serde(default)]
+    cached_tools: Vec<McpCachedTool>,
     #[serde(default)]
     last_status: String,
     #[serde(default)]

@@ -43,6 +43,13 @@ export function useConfigCore(options: UseConfigCoreOptions) {
       enabled: false,
       values: {},
     },
+    {
+      id: "refresh-mcp-skills",
+      command: "builtin",
+      args: ["refresh-mcp-skills"],
+      enabled: true,
+      values: {},
+    },
   ] as const;
 
   function defaultApiTools() {
@@ -184,6 +191,13 @@ export function useConfigCore(options: UseConfigCoreOptions) {
               .map((p) => ({
                 toolName: String((p as { toolName?: unknown })?.toolName || "").trim(),
                 enabled: !!(p as { enabled?: unknown })?.enabled,
+              }))
+              .filter((p) => !!p.toolName)
+          : [],
+        cachedTools: Array.isArray((item as { cachedTools?: unknown[] })?.cachedTools)
+          ? ((item as { cachedTools?: unknown[] }).cachedTools || [])
+              .map((p) => ({
+                toolName: String((p as { toolName?: unknown })?.toolName || "").trim(),
                 description: String((p as { description?: unknown })?.description || "").trim(),
               }))
               .filter((p) => !!p.toolName)
@@ -210,7 +224,17 @@ export function useConfigCore(options: UseConfigCoreOptions) {
       ...(options.config.sttApiConfigId ? { sttApiConfigId: options.config.sttApiConfigId } : {}),
       ...(options.config.sttAutoSend ? { sttAutoSend: true } : {}),
       shellWorkspaces: [...(options.config.shellWorkspaces || [])],
-      mcpServers: [...(options.config.mcpServers || [])],
+      // `cachedTools` is runtime-derived and should not be client-controlled on save.
+      mcpServers: (options.config.mcpServers || []).map((item) => ({
+        id: item.id,
+        name: item.name,
+        enabled: !!item.enabled,
+        definitionJson: item.definitionJson,
+        toolPolicies: [...(item.toolPolicies || [])],
+        lastStatus: item.lastStatus || "",
+        lastError: item.lastError || "",
+        updatedAt: item.updatedAt || "",
+      })),
       apiConfigs: options.config.apiConfigs.map((a) => ({
         id: a.id,
         name: a.name,

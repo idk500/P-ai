@@ -229,7 +229,22 @@ fn normalize_mcp_servers(config: &mut AppConfig) {
             tool_policies.push(McpToolPolicy {
                 tool_name,
                 enabled: policy.enabled,
-                description: policy.description.trim().to_string(),
+            });
+        }
+        let mut cached_tools = Vec::<McpCachedTool>::new();
+        let mut seen_cached_tool_names = std::collections::HashSet::<String>::new();
+        for cached in &raw.cached_tools {
+            let tool_name = cached.tool_name.trim().to_string();
+            if tool_name.is_empty() {
+                continue;
+            }
+            let key = tool_name.to_ascii_lowercase();
+            if !seen_cached_tool_names.insert(key) {
+                continue;
+            }
+            cached_tools.push(McpCachedTool {
+                tool_name,
+                description: cached.description.trim().to_string(),
             });
         }
         out.push(McpServerConfig {
@@ -238,6 +253,7 @@ fn normalize_mcp_servers(config: &mut AppConfig) {
             enabled: raw.enabled,
             definition_json,
             tool_policies,
+            cached_tools,
             last_status: raw.last_status.trim().to_string(),
             last_error: raw.last_error.trim().to_string(),
             updated_at: raw.updated_at.trim().to_string(),

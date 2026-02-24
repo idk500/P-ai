@@ -269,7 +269,6 @@ struct RuntimeToolAssembly {
     tools: Vec<Box<dyn ToolDyn>>,
     tool_manifest: Vec<Value>,
     _mcp_screenshot_client: Option<ScreenshotMcpClient>,
-    _dynamic_mcp_clients: Vec<DynamicMcpClient>,
 }
 
 fn tool_manifest_item(
@@ -298,6 +297,7 @@ async fn assemble_runtime_tools(
     let has_memory = tool_enabled(selected_api, "memory-save");
     let has_desktop_screenshot = tool_enabled(selected_api, "desktop-screenshot");
     let has_desktop_wait = tool_enabled(selected_api, "desktop-wait");
+    let has_refresh_mcp_skills = tool_enabled(selected_api, "refresh-mcp-skills");
     let has_shell_switch_workspace =
         shell_switch_workspace_enabled_for_session(selected_api, app_state, tool_session_id);
     let has_shell_exec = tool_enabled(selected_api, "shell-exec");
@@ -340,19 +340,11 @@ async fn assemble_runtime_tools(
             .ok_or_else(|| "memory_save requires app state".to_string())?
             .clone();
         tools.push(Box::new(BuiltinMemorySaveTool {
-            app_state: state.clone(),
+            app_state: state,
         }));
-        tools.push(Box::new(BuiltinMemorySaveBatchTool { app_state: state }));
         tool_manifest.push(tool_manifest_item(
             "builtin",
             "memory-save",
-            true,
-            true,
-            None,
-        ));
-        tool_manifest.push(tool_manifest_item(
-            "builtin",
-            "memory-save-batch",
             true,
             true,
             None,
@@ -361,13 +353,6 @@ async fn assemble_runtime_tools(
         tool_manifest.push(tool_manifest_item(
             "builtin",
             "memory-save",
-            false,
-            false,
-            Some("disabled in api tools config".to_string()),
-        ));
-        tool_manifest.push(tool_manifest_item(
-            "builtin",
-            "memory-save-batch",
             false,
             false,
             Some("disabled in api tools config".to_string()),
@@ -399,8 +384,8 @@ async fn assemble_runtime_tools(
         ));
     }
 
-    let dynamic_mcp_clients = match attach_enabled_mcp_tools_for_runtime(&mut tools, app_state).await {
-        Ok((clients, names)) => {
+    match attach_enabled_mcp_tools_for_runtime(&mut tools, app_state).await {
+        Ok(names) => {
             if names.is_empty() {
                 tool_manifest.push(tool_manifest_item(
                     "mcp_runtime",
@@ -420,7 +405,6 @@ async fn assemble_runtime_tools(
                     ));
                 }
             }
-            clients
         }
         Err(err) => {
             tool_manifest.push(tool_manifest_item(
@@ -431,9 +415,8 @@ async fn assemble_runtime_tools(
                 Some(err.clone()),
             ));
             eprintln!("[MCP] attach runtime tools skipped: {err}");
-            Vec::new()
         }
-    };
+    }
 
     if has_desktop_wait {
         tools.push(Box::new(BuiltinDesktopWaitTool));
@@ -448,6 +431,28 @@ async fn assemble_runtime_tools(
         tool_manifest.push(tool_manifest_item(
             "builtin",
             "desktop-wait",
+            false,
+            false,
+            Some("disabled in api tools config".to_string()),
+        ));
+    }
+
+    if has_refresh_mcp_skills {
+        let state = app_state
+            .ok_or_else(|| "refresh_mcp_and_skills requires app state".to_string())?
+            .clone();
+        tools.push(Box::new(BuiltinRefreshMcpAndSkillsTool { app_state: state }));
+        tool_manifest.push(tool_manifest_item(
+            "builtin",
+            "refresh-mcp-skills",
+            true,
+            true,
+            None,
+        ));
+    } else {
+        tool_manifest.push(tool_manifest_item(
+            "builtin",
+            "refresh-mcp-skills",
             false,
             false,
             Some("disabled in api tools config".to_string()),
@@ -508,7 +513,6 @@ async fn assemble_runtime_tools(
         tools,
         tool_manifest,
         _mcp_screenshot_client: mcp_screenshot_client,
-        _dynamic_mcp_clients: dynamic_mcp_clients,
     })
 }
 
@@ -903,6 +907,7 @@ async fn call_model_gemini_with_tools(
     let has_memory = tool_enabled(selected_api, "memory-save");
     let has_desktop_screenshot = tool_enabled(selected_api, "desktop-screenshot");
     let has_desktop_wait = tool_enabled(selected_api, "desktop-wait");
+    let has_refresh_mcp_skills = tool_enabled(selected_api, "refresh-mcp-skills");
     let has_shell_switch_workspace =
         shell_switch_workspace_enabled_for_session(selected_api, app_state, tool_session_id);
     let has_shell_exec = tool_enabled(selected_api, "shell-exec");
@@ -911,6 +916,7 @@ async fn call_model_gemini_with_tools(
         && !has_memory
         && !has_desktop_screenshot
         && !has_desktop_wait
+        && !has_refresh_mcp_skills
         && !has_shell_switch_workspace
         && !has_shell_exec
     {
@@ -938,10 +944,6 @@ async fn call_model_gemini_with_tools(
             .ok_or_else(|| "memory_save requires app state".to_string())?
             .clone();
         tools.push(Box::new(BuiltinMemorySaveTool { app_state: state }));
-        let state = app_state
-            .ok_or_else(|| "memory_save_batch requires app state".to_string())?
-            .clone();
-        tools.push(Box::new(BuiltinMemorySaveBatchTool { app_state: state }));
     }
     let mut _mcp_screenshot_client: Option<ScreenshotMcpClient> = None;
     if has_desktop_screenshot {
@@ -952,8 +954,8 @@ async fn call_model_gemini_with_tools(
             })?;
         _mcp_screenshot_client = Some(client);
     }
-    let _dynamic_mcp_clients = match attach_enabled_mcp_tools_for_runtime(&mut tools, app_state).await {
-        Ok((v, _)) => v,
+    let _attached_mcp_tool_names = match attach_enabled_mcp_tools_for_runtime(&mut tools, app_state).await {
+        Ok(v) => v,
         Err(err) => {
             eprintln!("[MCP] attach runtime tools skipped: {err}");
             Vec::new()
@@ -961,6 +963,12 @@ async fn call_model_gemini_with_tools(
     };
     if has_desktop_wait {
         tools.push(Box::new(BuiltinDesktopWaitTool));
+    }
+    if has_refresh_mcp_skills {
+        let state = app_state
+            .ok_or_else(|| "refresh_mcp_and_skills requires app state".to_string())?
+            .clone();
+        tools.push(Box::new(BuiltinRefreshMcpAndSkillsTool { app_state: state }));
     }
     if has_shell_switch_workspace {
         let state = app_state
@@ -1257,6 +1265,7 @@ async fn call_model_anthropic_with_tools(
     let has_memory = tool_enabled(selected_api, "memory-save");
     let has_desktop_screenshot = tool_enabled(selected_api, "desktop-screenshot");
     let has_desktop_wait = tool_enabled(selected_api, "desktop-wait");
+    let has_refresh_mcp_skills = tool_enabled(selected_api, "refresh-mcp-skills");
     let has_shell_switch_workspace =
         shell_switch_workspace_enabled_for_session(selected_api, app_state, tool_session_id);
     let has_shell_exec = tool_enabled(selected_api, "shell-exec");
@@ -1265,6 +1274,7 @@ async fn call_model_anthropic_with_tools(
         && !has_memory
         && !has_desktop_screenshot
         && !has_desktop_wait
+        && !has_refresh_mcp_skills
         && !has_shell_switch_workspace
         && !has_shell_exec
     {
@@ -1292,10 +1302,6 @@ async fn call_model_anthropic_with_tools(
             .ok_or_else(|| "memory_save requires app state".to_string())?
             .clone();
         tools.push(Box::new(BuiltinMemorySaveTool { app_state: state }));
-        let state = app_state
-            .ok_or_else(|| "memory_save_batch requires app state".to_string())?
-            .clone();
-        tools.push(Box::new(BuiltinMemorySaveBatchTool { app_state: state }));
     }
     let mut _mcp_screenshot_client: Option<ScreenshotMcpClient> = None;
     if has_desktop_screenshot {
@@ -1306,8 +1312,8 @@ async fn call_model_anthropic_with_tools(
             })?;
         _mcp_screenshot_client = Some(client);
     }
-    let _dynamic_mcp_clients = match attach_enabled_mcp_tools_for_runtime(&mut tools, app_state).await {
-        Ok((v, _)) => v,
+    let _attached_mcp_tool_names = match attach_enabled_mcp_tools_for_runtime(&mut tools, app_state).await {
+        Ok(v) => v,
         Err(err) => {
             eprintln!("[MCP] attach runtime tools skipped: {err}");
             Vec::new()
@@ -1315,6 +1321,12 @@ async fn call_model_anthropic_with_tools(
     };
     if has_desktop_wait {
         tools.push(Box::new(BuiltinDesktopWaitTool));
+    }
+    if has_refresh_mcp_skills {
+        let state = app_state
+            .ok_or_else(|| "refresh_mcp_and_skills requires app state".to_string())?
+            .clone();
+        tools.push(Box::new(BuiltinRefreshMcpAndSkillsTool { app_state: state }));
     }
     if has_shell_switch_workspace {
         let state = app_state

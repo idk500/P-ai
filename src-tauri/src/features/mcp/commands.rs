@@ -1,57 +1,143 @@
-fn now_iso_or_empty() -> String {
-    now_iso()
-}
-
 fn normalize_mcp_server_input(input: McpServerInput) -> Result<McpServerConfig, String> {
     let id = input.id.trim().to_string();
     if id.is_empty() {
         return Err("MCP server id is required".to_string());
     }
-    let _input_name = input.name.trim().to_string();
+    let input_name = input.name.trim().to_string();
     let definition_json = input.definition_json.trim().to_string();
     if definition_json.is_empty() {
         return Err("MCP definition JSON is required".to_string());
     }
-    let (_normalized_value, _migrated) =
-        normalize_mcp_definition_for_validation(&definition_json).map_err(|err| {
-            let detail = if err.details.is_empty() {
-                String::new()
-            } else {
-                format!(" | details: {}", err.details.join(" ; "))
-            };
-            format!("{} ({}){}", err.message, err.code, detail)
-        })?;
-    let (parsed_name, _parsed) = parse_mcp_server_definition(&definition_json)?;
-    let name = parsed_name;
+    let parsed_name = parse_mcp_server_definition(&definition_json)
+        .map(|(name, _)| name)
+        .unwrap_or_else(|_| id.clone());
+    let name = if input_name.is_empty() {
+        parsed_name
+    } else {
+        input_name
+    };
 
     Ok(McpServerConfig {
         id,
         name,
-        enabled: input.enabled,
+        enabled: false,
         definition_json,
         tool_policies: Vec::new(),
-        last_status: "saved".to_string(),
+        cached_tools: Vec::new(),
+        last_status: String::new(),
         last_error: String::new(),
-        updated_at: now_iso_or_empty(),
+        updated_at: String::new(),
     })
 }
 
-fn merge_mcp_server_preserving_policies(
-    current: Option<&McpServerConfig>,
-    mut next: McpServerConfig,
-) -> McpServerConfig {
-    if let Some(old) = current {
-        if next.tool_policies.is_empty() {
-            next.tool_policies = old.tool_policies.clone();
-        }
-        if next.last_status.trim().is_empty() {
-            next.last_status = old.last_status.clone();
-        }
-        if next.last_error.trim().is_empty() {
-            next.last_error = old.last_error.clone();
-        }
+fn overlay_runtime_state_on_server(mut server: McpServerConfig) -> McpServerConfig {
+    if let Some(runtime) = mcp_runtime_state_get(&server.id) {
+        server.enabled = runtime.deployed;
+        server.last_status = runtime.last_status;
+        server.last_error = runtime.last_error;
+        server.updated_at = runtime.updated_at;
+        server.cached_tools = runtime
+            .tools
+            .iter()
+            .map(|t| McpCachedTool {
+                tool_name: t.tool_name.clone(),
+                description: t.description.clone(),
+            })
+            .collect();
     }
-    next
+    server
+}
+
+fn load_server_by_id(state: &AppState, server_id: &str) -> Result<McpServerConfig, String> {
+    load_workspace_mcp_servers(state)?
+        .into_iter()
+        .find(|s| s.id == server_id)
+        .ok_or_else(|| format!("MCP server '{}' not found", server_id))
+}
+
+fn list_tools_from_runtime_or_policy(server: &McpServerConfig) -> Vec<McpToolDescriptor> {
+    if let Some(runtime) = mcp_runtime_state_get(&server.id) {
+        return runtime
+            .tools
+            .into_iter()
+            .map(|tool| {
+                let enabled = mcp_policy_enabled_for_tool(server, &tool.tool_name)
+                    && mcp_tool_allowed_by_definition(server, &tool.tool_name);
+                McpToolDescriptor { enabled, ..tool }
+            })
+            .collect();
+    }
+    server
+        .tool_policies
+        .iter()
+        .map(|policy| McpToolDescriptor {
+            tool_name: policy.tool_name.clone(),
+            description: String::new(),
+            enabled: mcp_tool_allowed_by_definition(server, &policy.tool_name) && policy.enabled,
+        })
+        .collect()
+}
+
+async fn mcp_redeploy_all_from_policy(state: &AppState) -> Result<Vec<WorkspaceLoadError>, String> {
+    let servers = {
+        let guard = state
+            .state_lock
+            .lock()
+            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
+        let servers = load_workspace_mcp_servers(state)?;
+        drop(guard);
+        servers
+    };
+
+    for server in &servers {
+        mcp_disconnect_cached_client(&server.id).await;
+        mcp_runtime_state_set(&server.id, false, "stopped", "", Vec::new());
+    }
+
+    let mut deploy_errors = Vec::<WorkspaceLoadError>::new();
+    for server in servers.into_iter().filter(|s| s.enabled) {
+        mcp_runtime_state_set(&server.id, false, "deploying", "", Vec::new());
+        let tools = match mcp_list_server_tools_runtime(&server).await {
+            Ok(tools) => tools,
+            Err(err) => {
+                mcp_runtime_state_set(&server.id, false, "failed", &err, Vec::new());
+                deploy_errors.push(WorkspaceLoadError {
+                    item: server.id.clone(),
+                    error: err,
+                });
+                continue;
+            }
+        };
+
+        let discovered_names = tools
+            .iter()
+            .map(|t| t.tool_name.clone())
+            .collect::<Vec<_>>();
+        let merged_policies = {
+            let guard = state
+                .state_lock
+                .lock()
+                .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
+            let policies = merge_workspace_mcp_tool_policies_with_new_tools(state, &server.id, &discovered_names)?;
+            drop(guard);
+            policies
+        };
+
+        let mut server_with_policies = server.clone();
+        server_with_policies.tool_policies = merged_policies;
+        let final_tools = tools
+            .into_iter()
+            .map(|tool| {
+                let enabled = mcp_policy_enabled_for_tool(&server_with_policies, &tool.tool_name)
+                    && mcp_tool_allowed_by_definition(&server_with_policies, &tool.tool_name);
+                McpToolDescriptor { enabled, ..tool }
+            })
+            .collect::<Vec<_>>();
+
+        mcp_runtime_state_set(&server.id, true, "deployed", "", final_tools);
+    }
+
+    Ok(deploy_errors)
 }
 
 #[tauri::command]
@@ -60,10 +146,12 @@ fn mcp_list_servers(state: State<'_, AppState>) -> Result<Vec<McpServerConfig>, 
         .state_lock
         .lock()
         .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut config = read_config(&state.config_path)?;
-    normalize_app_config(&mut config);
+    let mut out = load_workspace_mcp_servers(&state)?;
+    for item in &mut out {
+        *item = overlay_runtime_state_on_server(item.clone());
+    }
     drop(guard);
-    Ok(config.mcp_servers)
+    Ok(out)
 }
 
 #[tauri::command]
@@ -113,21 +201,12 @@ fn mcp_save_server(
         .state_lock
         .lock()
         .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut config = read_config(&state.config_path)?;
-    normalize_app_config(&mut config);
-
-    let existing = config.mcp_servers.iter().find(|s| s.id == next.id).cloned();
-    let merged = merge_mcp_server_preserving_policies(existing.as_ref(), next);
-
-    if let Some(pos) = config.mcp_servers.iter().position(|s| s.id == merged.id) {
-        config.mcp_servers[pos] = merged.clone();
-    } else {
-        config.mcp_servers.push(merged.clone());
-    }
-    write_config(&state.config_path, &config)?;
+    save_workspace_mcp_server(&state, &next)?;
+    let mut saved = load_server_by_id(&state, &next.id)?;
+    saved = overlay_runtime_state_on_server(saved);
     drop(guard);
 
-    Ok(merged)
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -143,18 +222,11 @@ async fn mcp_remove_server(
         .state_lock
         .lock()
         .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut config = read_config(&state.config_path)?;
-    normalize_app_config(&mut config);
-
-    let before = config.mcp_servers.len();
-    config.mcp_servers.retain(|s| s.id != server_id);
-    let removed = config.mcp_servers.len() != before;
-    if removed {
-        write_config(&state.config_path, &config)?;
-    }
+    let removed = remove_workspace_mcp_server(&state, server_id)?;
     drop(guard);
     if removed {
         mcp_disconnect_cached_client(server_id).await;
+        mcp_runtime_state_remove(server_id);
     }
     Ok(removed)
 }
@@ -174,20 +246,43 @@ async fn mcp_list_server_tools(
             .state_lock
             .lock()
             .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-        let mut config = read_config(&state.config_path)?;
-        normalize_app_config(&mut config);
-        let server = config
-            .mcp_servers
-            .iter()
-            .find(|s| s.id == server_id)
-            .cloned()
-            .ok_or_else(|| format!("MCP server '{}' not found", server_id))?;
+        let server = load_server_by_id(&state, server_id)?;
         drop(guard);
         server
     };
 
     let started = std::time::Instant::now();
     let tools = mcp_list_server_tools_runtime(&server).await?;
+
+    Ok(McpListServerToolsResult {
+        server_id: server.id,
+        tools,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+#[tauri::command]
+fn mcp_list_server_tools_cached(
+    input: McpServerIdInput,
+    state: State<'_, AppState>,
+) -> Result<McpListServerToolsResult, String> {
+    let server_id = input.server_id.trim();
+    if server_id.is_empty() {
+        return Err("serverId is required".to_string());
+    }
+
+    let server = {
+        let guard = state
+            .state_lock
+            .lock()
+            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
+        let server = load_server_by_id(&state, server_id)?;
+        drop(guard);
+        server
+    };
+
+    let started = std::time::Instant::now();
+    let tools = list_tools_from_runtime_or_policy(&server);
 
     Ok(McpListServerToolsResult {
         server_id: server.id,
@@ -206,64 +301,58 @@ async fn mcp_deploy_server(
         return Err("serverId is required".to_string());
     }
 
-    let mut server = {
+    let server = {
         let guard = state
             .state_lock
             .lock()
             .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-        let mut config = read_config(&state.config_path)?;
-        normalize_app_config(&mut config);
-        let mut server = config
-            .mcp_servers
-            .iter()
-            .find(|s| s.id == server_id)
-            .cloned()
-            .ok_or_else(|| format!("MCP server '{}' not found", server_id))?;
-        server.enabled = true;
-        server.last_status = "deploying".to_string();
-        server.last_error.clear();
-        server.updated_at = now_iso_or_empty();
-        if let Some(pos) = config.mcp_servers.iter().position(|s| s.id == server_id) {
-            config.mcp_servers[pos] = server.clone();
-        }
-        write_config(&state.config_path, &config)?;
+        let server = load_server_by_id(&state, server_id)?;
+        set_workspace_mcp_policy_enabled(&state, server_id, true)?;
         drop(guard);
         server
     };
 
+    mcp_runtime_state_set(server_id, false, "deploying", "", Vec::new());
     let started = std::time::Instant::now();
     let tools_res = mcp_list_server_tools_runtime(&server).await;
 
-    let guard = state
-        .state_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut config = read_config(&state.config_path)?;
-    normalize_app_config(&mut config);
-
-    if let Some(pos) = config.mcp_servers.iter().position(|s| s.id == server_id) {
-        match &tools_res {
-            Ok(_) => {
-                config.mcp_servers[pos].last_status = "deployed".to_string();
-                config.mcp_servers[pos].last_error.clear();
-                config.mcp_servers[pos].enabled = true;
-            }
-            Err(err) => {
-                config.mcp_servers[pos].last_status = "failed".to_string();
-                config.mcp_servers[pos].last_error = err.clone();
-                config.mcp_servers[pos].enabled = false;
-            }
+    let tools = match tools_res {
+        Ok(tools) => tools,
+        Err(err) => {
+            mcp_runtime_state_set(server_id, false, "failed", &err, Vec::new());
+            return Err(err);
         }
-        config.mcp_servers[pos].updated_at = now_iso_or_empty();
-        server = config.mcp_servers[pos].clone();
-    }
-    write_config(&state.config_path, &config)?;
-    drop(guard);
+    };
 
-    let tools = tools_res?;
+    let discovered_names = tools
+        .iter()
+        .map(|t| t.tool_name.clone())
+        .collect::<Vec<_>>();
+    let merged_policies = {
+        let guard = state
+            .state_lock
+            .lock()
+            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
+        let policies = merge_workspace_mcp_tool_policies_with_new_tools(&state, server_id, &discovered_names)?;
+        drop(guard);
+        policies
+    };
+
+    let mut server_with_policies = server.clone();
+    server_with_policies.tool_policies = merged_policies;
+    let final_tools = tools
+        .into_iter()
+        .map(|tool| {
+            let enabled = mcp_policy_enabled_for_tool(&server_with_policies, &tool.tool_name)
+                && mcp_tool_allowed_by_definition(&server_with_policies, &tool.tool_name);
+            McpToolDescriptor { enabled, ..tool }
+        })
+        .collect::<Vec<_>>();
+
+    mcp_runtime_state_set(server_id, true, "deployed", "", final_tools.clone());
     Ok(McpListServerToolsResult {
         server_id: server.id,
-        tools,
+        tools: final_tools,
         elapsed_ms: started.elapsed().as_millis() as u64,
     })
 }
@@ -277,31 +366,26 @@ async fn mcp_undeploy_server(
     if server_id.is_empty() {
         return Err("serverId is required".to_string());
     }
+    {
+        let guard = state
+            .state_lock
+            .lock()
+            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
+        let _ = load_server_by_id(&state, server_id)?;
+        set_workspace_mcp_policy_enabled(&state, server_id, false)?;
+        drop(guard);
+    }
+    mcp_disconnect_cached_client(server_id).await;
+    mcp_runtime_state_set(server_id, false, "stopped", "", Vec::new());
 
     let guard = state
         .state_lock
         .lock()
         .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut config = read_config(&state.config_path)?;
-    normalize_app_config(&mut config);
-
-    let pos = config
-        .mcp_servers
-        .iter()
-        .position(|s| s.id == server_id)
-        .ok_or_else(|| format!("MCP server '{}' not found", server_id))?;
-
-    config.mcp_servers[pos].enabled = false;
-    config.mcp_servers[pos].last_status = "stopped".to_string();
-    config.mcp_servers[pos].last_error.clear();
-    config.mcp_servers[pos].updated_at = now_iso_or_empty();
-
-    let updated = config.mcp_servers[pos].clone();
-    write_config(&state.config_path, &config)?;
+    let mut out = load_server_by_id(&state, server_id)?;
+    out = overlay_runtime_state_on_server(out);
     drop(guard);
-    mcp_disconnect_cached_client(server_id).await;
-
-    Ok(updated)
+    Ok(out)
 }
 
 #[tauri::command]
@@ -318,38 +402,41 @@ fn mcp_set_tool_enabled(
         return Err("toolName is required".to_string());
     }
 
+    let policies = {
+        let guard = state
+            .state_lock
+            .lock()
+            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
+        let _ = load_server_by_id(&state, server_id)?;
+        let mut policies = load_workspace_mcp_tool_policies(&state, server_id)?;
+        if let Some(policy) = policies.iter_mut().find(|p| p.tool_name == tool_name) {
+            policy.enabled = input.enabled;
+        } else {
+            policies.push(McpToolPolicy {
+                tool_name: tool_name.to_string(),
+                enabled: input.enabled,
+            });
+        }
+        save_workspace_mcp_tool_policies(&state, server_id, &policies)?;
+        drop(guard);
+        policies
+    };
+
+    mcp_runtime_state_set_tool_enabled(server_id, tool_name, input.enabled);
+
     let guard = state
         .state_lock
         .lock()
         .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut config = read_config(&state.config_path)?;
-    normalize_app_config(&mut config);
-
-    let pos = config
-        .mcp_servers
-        .iter()
-        .position(|s| s.id == server_id)
-        .ok_or_else(|| format!("MCP server '{}' not found", server_id))?;
-    let server = &mut config.mcp_servers[pos];
-
-    if let Some(policy) = server
-        .tool_policies
-        .iter_mut()
-        .find(|p| p.tool_name == tool_name)
-    {
-        policy.enabled = input.enabled;
-    } else {
-        server.tool_policies.push(McpToolPolicy {
-            tool_name: tool_name.to_string(),
-            enabled: input.enabled,
-            description: String::new(),
-        });
-    }
-    server.updated_at = now_iso_or_empty();
-
-    let out = server.clone();
-    write_config(&state.config_path, &config)?;
+    let mut server = load_server_by_id(&state, server_id)?;
+    server.tool_policies = policies;
+    server = overlay_runtime_state_on_server(server);
     drop(guard);
 
-    Ok(out)
+    Ok(server)
+}
+
+#[tauri::command]
+fn mcp_open_workspace_dir(state: State<'_, AppState>) -> Result<String, String> {
+    open_mcp_workspace_dir(&state)
 }
