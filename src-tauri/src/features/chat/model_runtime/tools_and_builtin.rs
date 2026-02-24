@@ -1007,60 +1007,6 @@ fn builtin_memory_save(app_state: &AppState, args: Value) -> Result<Value, Strin
     }))
 }
 
-fn builtin_memory_save_batch(app_state: &AppState, args: Value) -> Result<Value, String> {
-    const MAX_BATCH_ITEMS: usize = 7;
-    let memories = args
-        .get("memories")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "memory_save_batch.memories is required".to_string())?;
-    if memories.is_empty() {
-        return Err("memory_save_batch.memories must not be empty".to_string());
-    }
-
-    let mut drafts = Vec::<MemorySaveDraft>::new();
-    let mut truncated = false;
-    for item in memories {
-        if drafts.len() >= MAX_BATCH_ITEMS {
-            truncated = true;
-            break;
-        }
-        let memory_type = item
-            .get("memory_type")
-            .or_else(|| item.get("memoryType"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| "memory_save_batch.memories[].memoryType is required".to_string())?;
-        let judgment = item
-            .get("judgment")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "memory_save_batch.memories[].judgment is required".to_string())?;
-        let reasoning = item
-            .get("reasoning")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let tags = item
-            .get("tags")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "memory_save_batch.memories[].tags is required".to_string())?
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
-        drafts.push(parse_memory_save_draft(memory_type, judgment, reasoning, tags)?);
-    }
-
-    let (items, total_memories) = upsert_memories(app_state, &drafts)?;
-    let accepted = items.iter().filter(|it| it.saved).count();
-    let rejected = items.len().saturating_sub(accepted);
-    Ok(serde_json::json!({
-      "saved": accepted > 0,
-      "accepted": accepted,
-      "rejected": rejected,
-      "truncated": truncated,
-      "items": items,
-      "totalMemories": total_memories
-    }))
-}
-
 async fn builtin_desktop_wait(ms: u64) -> Result<Value, String> {
     let res = run_wait_tool(WaitRequest {
         mode: WaitMode::Sleep,
@@ -1069,6 +1015,40 @@ async fn builtin_desktop_wait(ms: u64) -> Result<Value, String> {
     .await
     .map_err(|err| to_tool_err_string(&err))?;
     serde_json::to_value(res).map_err(|err| format!("serialize desktop wait result failed: {err}"))
+}
+
+async fn builtin_refresh_mcp_and_skills(app_state: &AppState) -> Result<Value, String> {
+    let mut result = {
+        let guard = app_state
+            .state_lock
+            .lock()
+            .map_err(|err| {
+                format!(
+                    "Failed to lock state mutex at {}:{}:{}: {}",
+                    file!(),
+                    line!(),
+                    module_path!(),
+                    err
+                )
+            })?;
+        let result = refresh_workspace_mcp_and_skills(app_state)?;
+        drop(guard);
+        result
+    };
+    match mcp_redeploy_all_from_policy(app_state).await {
+        Ok(deploy_errors) => {
+            if !deploy_errors.is_empty() {
+                result.mcp_failed.extend(deploy_errors);
+            }
+        }
+        Err(err) => {
+            result.mcp_failed.push(WorkspaceLoadError {
+                item: "mcp_redeploy_all_from_policy".to_string(),
+                error: err,
+            });
+        }
+    }
+    serde_json::to_value(result).map_err(|err| format!("Serialize refresh result failed: {err}"))
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1092,22 +1072,12 @@ struct MemorySaveToolArgs {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-struct MemorySaveBatchItemArgs {
-    memory_type: String,
-    judgment: String,
-    reasoning: Option<String>,
-    tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct MemorySaveBatchToolArgs {
-    memories: Vec<MemorySaveBatchItemArgs>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
 struct DesktopWaitToolArgs {
     ms: u64,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct RefreshMcpAndSkillsToolArgs {}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct TerminalExecToolArgs {
@@ -1270,67 +1240,6 @@ impl Tool for BuiltinMemorySaveTool {
     }
 }
 
-#[derive(Debug, Clone)]
-struct BuiltinMemorySaveBatchTool {
-    app_state: AppState,
-}
-
-impl Tool for BuiltinMemorySaveBatchTool {
-    const NAME: &'static str = "memory_save_batch";
-    type Error = ToolInvokeError;
-    type Args = MemorySaveBatchToolArgs;
-    type Output = Value;
-
-    async fn definition(&self, _prompt: String) -> ToolDefinition {
-        ToolDefinition {
-            name: "memory_save_batch".to_string(),
-            description: "批量保存与用户相关、长期有价值的记忆（单次最多 7 条）。禁止保存敏感信息。".to_string(),
-            parameters: serde_json::json!({
-              "type": "object",
-              "properties": {
-                "memories": {
-                  "type": "array",
-                  "maxItems": 7,
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "memory_type": { "type": "string", "enum": ["knowledge", "skill", "emotion", "event"] },
-                      "judgment": { "type": "string" },
-                      "reasoning": { "type": "string" },
-                      "tags": { "type": "array", "items": { "type": "string" } }
-                    },
-                    "required": ["memory_type", "judgment", "tags"]
-                  }
-                }
-              },
-              "required": ["memories"]
-            }),
-        }
-    }
-
-    async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let args_json = serde_json::json!({
-            "memories": args.memories,
-        });
-        eprintln!(
-            "[TOOL-DEBUG] execute_builtin_tool.start name=memory-save-batch args={}",
-            debug_value_snippet(&args_json, 240)
-        );
-        let result =
-            builtin_memory_save_batch(&self.app_state, args_json).map_err(ToolInvokeError::from);
-        match &result {
-            Ok(v) => eprintln!(
-                "[TOOL-DEBUG] execute_builtin_tool.ok name=memory-save-batch result={}",
-                debug_value_snippet(v, 240)
-            ),
-            Err(err) => {
-                eprintln!("[TOOL-DEBUG] execute_builtin_tool.err name=memory-save-batch err={err}")
-            }
-        }
-        result
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct BuiltinDesktopWaitTool;
 
@@ -1366,6 +1275,48 @@ impl Tool for BuiltinDesktopWaitTool {
                 debug_value_snippet(v, 240)
             ),
             Err(err) => eprintln!("[TOOL-DEBUG] execute_builtin_tool.err name=desktop-wait err={err}"),
+        }
+        result
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BuiltinRefreshMcpAndSkillsTool {
+    app_state: AppState,
+}
+
+impl Tool for BuiltinRefreshMcpAndSkillsTool {
+    const NAME: &'static str = "refresh_mcp_and_skills";
+    type Error = ToolInvokeError;
+    type Args = RefreshMcpAndSkillsToolArgs;
+    type Output = Value;
+
+    async fn definition(&self, _prompt: String) -> ToolDefinition {
+        ToolDefinition {
+            name: "refresh_mcp_and_skills".to_string(),
+            description: "Reload MCP and SKILL from llm-workspace and return latest skill summary."
+                .to_string(),
+            parameters: serde_json::json!({
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn call(&self, _args: Self::Args) -> Result<Self::Output, Self::Error> {
+        eprintln!("[TOOL-DEBUG] execute_builtin_tool.start name=refresh-mcp-and-skills");
+        let result = builtin_refresh_mcp_and_skills(&self.app_state)
+            .await
+            .map_err(ToolInvokeError::from);
+        match &result {
+            Ok(v) => eprintln!(
+                "[TOOL-DEBUG] execute_builtin_tool.ok name=refresh-mcp-and-skills result={}",
+                debug_value_snippet(v, 240)
+            ),
+            Err(err) => eprintln!(
+                "[TOOL-DEBUG] execute_builtin_tool.err name=refresh-mcp-and-skills err={err}"
+            ),
         }
         result
     }
@@ -1484,4 +1435,3 @@ impl Tool for BuiltinShellSwitchWorkspaceTool {
         result
     }
 }
-

@@ -402,6 +402,9 @@ async fn send_chat_message(
         let mut chat_overrides = ChatPromptOverrides::default();
         chat_overrides.latest_user_text = Some(latest_user_text.clone());
         chat_overrides.latest_user_time_iso = Some(now.clone());
+        chat_overrides
+            .latest_user_system_blocks
+            .push(build_hidden_skill_snapshot_block(&state));
         if let Some(xml) = &memory_board_xml {
             chat_overrides.latest_user_system_blocks.push(xml.clone());
         }
@@ -1143,6 +1146,10 @@ fn check_tools_status(
             "memory-save" => ("loaded".to_string(), "内置记忆工具可用".to_string()),
             "desktop-screenshot" => ("loaded".to_string(), "桌面截图工具可用".to_string()),
             "desktop-wait" => ("loaded".to_string(), "桌面等待工具可用".to_string()),
+            "refresh-mcp-skills" => (
+                "loaded".to_string(),
+                "MCP/Skill 刷新工具可用".to_string(),
+            ),
             "shell-exec" => {
                 #[cfg(target_os = "windows")]
                 {
@@ -1270,6 +1277,4 @@ async fn send_debug_probe(state: State<'_, AppState>) -> Result<String, String> 
     .await?;
     Ok(reply.assistant_text)
 }
-
-
 
