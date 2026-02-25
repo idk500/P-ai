@@ -15,7 +15,7 @@ export function useRecordHotkey(options: UseRecordHotkeyOptions) {
   let blockUntilRelease = false;
   let recordingStarted = false;
 
-  const startDelayMs = options.startDelayMs ?? 180;
+  const startDelayMs = options.startDelayMs ?? 0;
 
   function clearStartTimer() {
     if (startTimer) {

@@ -624,10 +624,11 @@ const stopHotkeyRecordTest = chatMedia.stopHotkeyRecordTest;
 const playHotkeyRecordTest = chatMedia.playHotkeyRecordTest;
 const cleanupChatMedia = chatMedia.cleanupChatMedia;
 const recordHotkey = useRecordHotkey({
-  isActive: () => viewMode.value === "chat",
+  isActive: () => viewMode.value === "chat" && document.visibilityState === "visible" && document.hasFocus(),
   getRecordHotkey: () => config.recordHotkey,
   onStartRecording: () => startRecording(),
   onStopRecording: (discard) => stopRecording(discard),
+  startDelayMs: 0,
 });
 const userPersona = computed(
   () => personas.value.find((p) => p.isBuiltInUser || p.id === "user-persona") ?? null,
