@@ -5,7 +5,7 @@
       class="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-base-100/70 backdrop-blur-[1px]"
     >
       <div class="rounded-box border border-primary/40 bg-base-100 px-4 py-2 text-sm font-medium text-primary">
-        Drop image or PDF
+        {{ t("chat.dropImageOrPdf") }}
       </div>
     </div>
     <div
