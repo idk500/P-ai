@@ -489,6 +489,7 @@
     "currentHistoryTitle": "当前会话记录（未归档）",
     "stop": "停止",
     "stopReplying": "正在回复",
+    "dropImageOrPdf": "拖放图片或 PDF",
     "send": "发送",
     "taskTrigger": {
       "badge": "任务提醒",
