@@ -167,6 +167,20 @@
                 <span>{{ t("chat.voice", { index: idx + 1 }) }}</span>
               </button>
             </div>
+            <div
+              v-if="block.attachmentFiles.length > 0"
+              :class="block.taskTrigger || block.text || block.images.length > 0 || block.audios.length > 0 ? 'mt-2 flex flex-wrap gap-1' : 'flex flex-wrap gap-1'"
+            >
+              <div
+                v-for="(file, idx) in block.attachmentFiles"
+                :key="`${block.id}-file-${idx}`"
+                class="badge badge-outline gap-1 py-3"
+                :title="file.relativePath"
+              >
+                <FileText class="h-3.5 w-3.5" />
+                <span class="text-[11px]">{{ file.fileName }}</span>
+              </div>
+            </div>
             <div v-if="!isOwnMessage(block) && !chatting && !frozen" class="mt-2 flex items-center gap-1.5">
               <button
                 type="button"
@@ -371,7 +385,7 @@
       >
         <span>{{ chatErrorText }}</span>
       </div>
-      <div v-if="clipboardImages.length > 0" class="flex flex-wrap gap-1 mb-2">
+      <div v-if="clipboardImages.length > 0 || queuedAttachmentNotices.length > 0" class="mb-2 flex flex-wrap gap-1">
         <div v-for="(img, idx) in clipboardImages" :key="`${img.mime}-${idx}`" class="badge badge-outline gap-1 py-3">
           <ImageIcon v-if="isImageMime(img.mime)" class="h-3.5 w-3.5" />
           <FileText v-else-if="isPdfMime(img.mime)" class="h-3.5 w-3.5" />
@@ -381,44 +395,67 @@
             <X class="h-3 w-3" />
           </button>
         </div>
+        <div
+          v-for="(file, idx) in queuedAttachmentNotices"
+          :key="file.id"
+          class="badge badge-outline gap-1 py-3"
+        >
+          <FileText class="h-3.5 w-3.5" />
+          <span class="text-[11px]">{{ file.fileName }}</span>
+          <button class="btn btn-ghost btn-sm btn-square" :disabled="chatting || frozen" @click="$emit('removeQueuedAttachmentNotice', idx)">
+            <X class="h-3 w-3" />
+          </button>
+        </div>
       </div>
       <div v-if="transcribing" class="mb-1 text-[11px] opacity-80 flex items-center gap-1">
         <span class="loading loading-spinner loading-sm"></span>
         <span>语音转写中...</span>
       </div>
-      <div class="flex flex-row items-center gap-2">
+      <div class="flex flex-col gap-2">
         <textarea
           ref="chatInputRef"
           v-model="localChatInput"
-          class="flex-1 textarea textarea-sm resize-none overflow-y-hidden chat-input-no-focus min-h-12.5"
+          class="w-full textarea textarea-sm resize-none overflow-y-auto chat-input-no-focus scrollbar-gutter-stable min-h-12.5"
           rows="1"
           :disabled="frozen"
           :placeholder="chatInputPlaceholder"
           @input="scheduleResizeChatInput"
           @keydown.enter.exact.prevent="!frozen && $emit('sendChat')"
         ></textarea>
-        <div class="flex flex-col gap-2 mt-auto">
-          <button
-            class="btn btn-sm btn-circle shrink-0"
-            :class="recording ? 'btn-error' : 'bg-base-100'"
-            :disabled="!canRecord || chatting || frozen"
-            :title="recording ? t('chat.recording', { seconds: Math.max(1, Math.round(recordingMs / 1000)) }) : t('chat.holdRecord', { hotkey: recordHotkey })"
-            @mousedown.prevent="$emit('startRecording')"
-            @mouseup.prevent="$emit('stopRecording')"
-            @mouseleave.prevent="recording && $emit('stopRecording')"
-            @touchstart.prevent="$emit('startRecording')"
-            @touchend.prevent="$emit('stopRecording')"
-          >
-            <Mic class="h-3.5 w-3.5" />
-          </button>
-          <button
-            class="btn btn-sm btn-circle btn-primary shrink-0"
-            :disabled="frozen"
-            :title="t('chat.send')"
-            @click="$emit('sendChat')"
-          >
-            <Send class="h-3.5 w-3.5" />
-          </button>
+        <div class="flex items-end justify-between gap-2">
+          <div class="flex items-end gap-2">
+            <button
+              class="btn btn-sm btn-circle bg-base-100 shrink-0"
+              :disabled="chatting || frozen"
+              :title="t('chat.attach')"
+              @click="$emit('pickAttachments')"
+            >
+              <Paperclip class="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div class="flex items-end gap-2">
+            <button
+              class="btn btn-sm btn-circle shrink-0"
+              :class="recording ? 'btn-error' : 'bg-base-100'"
+              :disabled="!canRecord || chatting || frozen"
+              :title="recording ? t('chat.recording', { seconds: Math.max(1, Math.round(recordingMs / 1000)) }) : t('chat.holdRecord', { hotkey: recordHotkey })"
+              @mousedown.prevent="$emit('startRecording')"
+              @mouseup.prevent="$emit('stopRecording')"
+              @mouseleave.prevent="recording && $emit('stopRecording')"
+              @touchstart.prevent="$emit('startRecording')"
+              @touchend.prevent="$emit('stopRecording')"
+            >
+              <Mic class="h-3.5 w-3.5" />
+            </button>
+            <button
+              class="btn btn-sm btn-circle btn-primary shrink-0"
+              :disabled="frozen"
+              :title="t('chat.send')"
+              @click="$emit('sendChat')"
+            >
+              <Send class="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -428,7 +465,7 @@
 <script setup lang="ts">
 import { computed, ref, nextTick, onBeforeUnmount, onMounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowDown, ArrowUp, Copy, FileText, Image as ImageIcon, Lock, LockOpen, Mic, Pause, Play, RotateCcw, Send, Square, Undo2, X } from "lucide-vue-next";
+import { ArrowDown, ArrowUp, Copy, FileText, Image as ImageIcon, Lock, LockOpen, Mic, Paperclip, Pause, Play, RotateCcw, Send, Square, Undo2, X } from "lucide-vue-next";
 import MarkdownIt from "markdown-it";
 import { katex } from "@mdit/plugin-katex";
 import { mark } from "@mdit/plugin-mark";
@@ -459,6 +496,7 @@ const props = defineProps<{
   streamToolCalls: Array<{ name: string; argsText: string }>;
   chatErrorText: string;
   clipboardImages: Array<{ mime: string; bytesBase64: string }>;
+  queuedAttachmentNotices: Array<{ id: string; fileName: string; relativePath: string; mime: string }>;
   chatInput: string;
   chatInputPlaceholder: string;
   canRecord: boolean;
@@ -478,8 +516,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "update:chatInput", value: string): void;
   (e: "removeClipboardImage", index: number): void;
+  (e: "removeQueuedAttachmentNotice", index: number): void;
   (e: "startRecording"): void;
   (e: "stopRecording"): void;
+  (e: "pickAttachments"): void;
   (e: "sendChat"): void;
   (e: "stopChat"): void;
   (e: "loadMoreMessageBlocks"): void;
@@ -858,7 +898,8 @@ function resizeChatInput() {
   el.style.height = "auto";
   const nextHeight = Math.min(el.scrollHeight, maxHeight);
   el.style.height = `${nextHeight}px`;
-  el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+  // Keep a stable scrollbar gutter to avoid width jumps while typing.
+  el.style.overflowY = "auto";
 }
 
 function scheduleResizeChatInput() {

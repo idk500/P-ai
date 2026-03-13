@@ -37,6 +37,7 @@ type UseConfigCoreOptions = {
 };
 
 export function useConfigCore(options: UseConfigCoreOptions) {
+  const CONTEXT_WINDOW_HARD_MAX = 2_000_000;
   const MIN_RECORD_SECONDS = 1;
   const MAX_MIN_RECORD_SECONDS = 30;
   const DEFAULT_MAX_RECORD_SECONDS = 60;
@@ -105,7 +106,7 @@ export function useConfigCore(options: UseConfigCoreOptions) {
       api.temperature = Math.max(0, Math.min(2, Number(api.temperature ?? 1)));
       api.contextWindowTokens = Math.max(
         16000,
-        Math.min(200000, Math.round(Number(api.contextWindowTokens ?? 128000))),
+        Math.min(CONTEXT_WINDOW_HARD_MAX, Math.round(Number(api.contextWindowTokens ?? 128000))),
       );
       api.maxOutputTokens = normalizeMaxOutputTokens(api.maxOutputTokens);
       api.failureRetryCount = Math.max(

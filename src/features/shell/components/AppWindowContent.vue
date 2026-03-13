@@ -101,6 +101,7 @@
         :stream-tool-calls="streamToolCalls"
         :chat-error-text="chatErrorText"
         :clipboard-images="clipboardImages"
+        :queued-attachment-notices="queuedAttachmentNotices"
         :chat-input="chatInput"
         :chat-input-placeholder="chatInputPlaceholder"
         :can-record="speechRecognitionSupported"
@@ -117,6 +118,8 @@
         :workspace-locked="chatWorkspaceLocked"
         @update:chat-input="updateChatInput"
         @remove-clipboard-image="removeClipboardImage"
+        @remove-queued-attachment-notice="removeQueuedAttachmentNotice"
+        @pick-attachments="pickAttachments"
         @start-recording="startRecording"
         @stop-recording="stopRecording"
         @send-chat="sendChat"
@@ -293,6 +296,7 @@ const props = defineProps<{
   streamToolCalls: Array<{ name: string; argsText: string }>;
   chatErrorText: string;
   clipboardImages: Array<{ mime: string; bytesBase64: string }>;
+  queuedAttachmentNotices: Array<{ id: string; fileName: string; relativePath: string; mime: string }>;
   chatInput: string;
   chatInputPlaceholder: string;
   speechRecognitionSupported: boolean;
@@ -361,6 +365,8 @@ const props = defineProps<{
   clearAgentAvatar: (input: { agentId: string }) => void;
   updateChatInput: (value: string) => void;
   removeClipboardImage: (index: number) => void;
+  removeQueuedAttachmentNotice: (index: number) => void;
+  pickAttachments: () => void;
   startRecording: () => void;
   stopRecording: () => void;
   sendChat: () => void;

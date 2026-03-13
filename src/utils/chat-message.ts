@@ -95,6 +95,41 @@ export function extractMessageAudios(msg?: ChatMessage): Array<{ mime: string; b
     .filter((p) => !!p.bytesBase64);
 }
 
+export function extractMessageAttachmentFiles(
+  msg?: ChatMessage,
+): Array<{ fileName: string; relativePath: string }> {
+  if (!msg) return [];
+  const out: Array<{ fileName: string; relativePath: string }> = [];
+  const seen = new Set<string>();
+  const metaAttachments = Array.isArray((msg.providerMeta as { attachments?: unknown } | undefined)?.attachments)
+    ? ((msg.providerMeta as { attachments?: Array<{ fileName?: unknown; relativePath?: unknown }> }).attachments || [])
+    : [];
+  for (const item of metaAttachments) {
+    const fileName = String(item?.fileName || "").trim();
+    const relativePath = String(item?.relativePath || "").trim().replace(/\\/g, "/");
+    if (!fileName || !relativePath) continue;
+    const key = `${fileName}::${relativePath}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ fileName, relativePath });
+  }
+  if (!Array.isArray(msg.extraTextBlocks)) return out;
+  for (const raw of msg.extraTextBlocks) {
+    const text = String(raw || "").trim();
+    if (!text) continue;
+    const fileMatch = text.match(/用户本次上传了一个附件：([^\n\r]+)/);
+    const pathMatch = text.match(/路径：([^\n\r）)]+)(?:）|\)|$)/);
+    const fileName = String(fileMatch?.[1] || "").trim();
+    const relativePath = String(pathMatch?.[1] || "").trim().replace(/\\/g, "/");
+    if (!fileName || !relativePath) continue;
+    const key = `${fileName}::${relativePath}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ fileName, relativePath });
+  }
+  return out;
+}
+
 export function estimateTextTokens(text: string): number {
   let zh = 0;
   let other = 0;

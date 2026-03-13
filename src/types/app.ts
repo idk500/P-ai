@@ -248,6 +248,7 @@ export type ChatMessage = {
     reasoningInline?: string;
     messageKind?: string;
     hiddenPromptText?: string;
+    attachments?: Array<{ fileName: string; relativePath: string; mime?: string }>;
     taskTrigger?: TaskTriggerMessageCard;
     [key: string]: unknown;
   };
@@ -269,6 +270,7 @@ export type ChatMessageBlock = {
   text: string;
   images: Array<{ mime: string; bytesBase64: string }>;
   audios: Array<{ mime: string; bytesBase64: string }>;
+  attachmentFiles: Array<{ fileName: string; relativePath: string }>;
   taskTrigger?: TaskTriggerMessageCard;
   reasoningStandard: string;
   reasoningInline: string;

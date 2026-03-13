@@ -303,6 +303,7 @@ fn main() {
             stt_transcribe,
             force_archive_current,
             refresh_models,
+            fetch_model_metadata,
             check_tools_status,
             get_image_text_cache_stats,
             clear_image_text_cache,

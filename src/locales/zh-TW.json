@@ -96,7 +96,9 @@
       "capabilities": "能力开关",
       "capText": "文本",
       "capImage": "图片",
-      "capTools": "工具调用"
+      "capTools": "工具调用",
+      "saveModelFirstHint": "模型已變更，請先保存模型；保存後會依模型元資料更新上下限與可用能力。",
+      "capabilityLimitedByModelHint": "當前模型元資料限制了部分能力開關。"
     },
     "welcome": {
       "title": "首次設定歡迎頁",
@@ -536,6 +538,7 @@
     "stop": "停止",
     "stopReplying": "停止回覆",
     "dropImageOrPdf": "拖放檔案（圖片/PDF 可直接多模態）",
+    "attach": "新增附件",
     "taskTrigger": {
       "badge": "任務提醒",
       "kindImmediate": "立即任務",

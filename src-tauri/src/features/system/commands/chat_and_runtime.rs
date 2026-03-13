@@ -376,6 +376,28 @@ async fn send_chat_message_inner(
     }
 
     let mut effective_payload = input.payload.clone();
+    let extra_block_count = effective_payload
+        .extra_text_blocks
+        .as_ref()
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let attachment_count = effective_payload
+        .attachments
+        .as_ref()
+        .map(|v| v.len())
+        .unwrap_or(0);
+    if extra_block_count > 0 {
+        eprintln!(
+            "[CHAT][ATTACHMENT] payload carries extra_text_blocks: count={}",
+            extra_block_count
+        );
+    }
+    if attachment_count > 0 {
+        eprintln!(
+            "[CHAT][ATTACHMENT] payload carries attachments json: count={}",
+            attachment_count
+        );
+    }
     let audios = effective_payload.audios.clone().unwrap_or_default();
     if !audios.is_empty() {
         return Err("当前版本仅支持本地语音识别，发送消息不支持语音附件。".to_string());
@@ -748,14 +770,8 @@ async fn send_chat_message_inner(
             storage_api.enable_image = true;
             storage_api.enable_audio = true;
             let mut storage_payload = input.payload.clone();
-            if let Some(display_text) = input
-                .payload
-                .display_text
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                storage_payload.text = Some(display_text.to_string());
+            if let Some(display_text) = input.payload.display_text.as_deref() {
+                storage_payload.text = Some(display_text.trim().to_string());
             }
             let mut user_parts = build_user_parts(&storage_payload, &storage_api)?;
             externalize_message_parts_to_media_refs(&mut user_parts, &state.data_path)?;
@@ -786,6 +802,9 @@ async fn send_chat_message_inner(
             if let Some(xml) = &memory_board_xml {
                 extra_text_blocks.push(xml.clone());
             }
+            let attachment_meta = normalize_payload_attachments(input.payload.attachments.as_ref());
+            let user_provider_meta =
+                merge_provider_meta_with_attachments(input.payload.provider_meta.clone(), &attachment_meta);
             let now = now_iso();
             let user_message = ChatMessage {
                 id: Uuid::new_v4().to_string(),
@@ -794,7 +813,7 @@ async fn send_chat_message_inner(
                 speaker_agent_id: Some(input.speaker_agent_id.clone().unwrap_or_else(|| USER_PERSONA_ID.to_string())),
                 parts: user_parts,
                 extra_text_blocks,
-                provider_meta: input.payload.provider_meta.clone(),
+                provider_meta: user_provider_meta,
                 tool_call: None,
                 mcp_call: None,
             };
@@ -876,6 +895,26 @@ async fn send_chat_message_inner(
                 if let Some(task_board) = build_hidden_task_board_block(&state) {
                     chat_overrides.latest_user_extra_blocks.push(task_board);
                 }
+            }
+            let attachment_meta = normalize_payload_attachments(input.payload.attachments.as_ref());
+            for item in attachment_meta {
+                let file_name = item
+                    .get("fileName")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                let relative_path = item
+                    .get("relativePath")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                if file_name.is_empty() || relative_path.is_empty() {
+                    continue;
+                }
+                chat_overrides.latest_user_extra_blocks.push(format!(
+                    "用户本次上传了一个附件：{}\n保存到了你工作区的downloads文件夹内（路径：{}）\n如果需要，请使用 shell 工具读取该文件内容。",
+                    file_name, relative_path
+                ));
             }
             chat_overrides.latest_images = Some(effective_images.clone());
             chat_overrides.latest_audios = Some(effective_audios.clone());
@@ -1352,8 +1391,14 @@ async fn send_chat_message(
     // 用户发言：构造消息并入队
     let text = input.payload.text.as_deref().unwrap_or("").trim();
     let images = input.payload.images.as_ref().map(|v| v.as_slice()).unwrap_or(&[]);
+    let attachments = input
+        .payload
+        .attachments
+        .as_ref()
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
 
-    if text.is_empty() && images.is_empty() {
+    if text.is_empty() && images.is_empty() && attachments.is_empty() {
         return Err("消息内容为空".to_string());
     }
 
@@ -1410,7 +1455,10 @@ async fn send_chat_message(
         speaker_agent_id: None,
         parts: message_parts,
         extra_text_blocks: Vec::new(),
-        provider_meta: None,
+        provider_meta: merge_provider_meta_with_attachments(
+            input.payload.provider_meta.clone(),
+            &normalize_payload_attachments(input.payload.attachments.as_ref()),
+        ),
         tool_call: None,
         mcp_call: None,
     };
@@ -1874,6 +1922,75 @@ fn media_extension_from_mime_for_download(mime: &str) -> &'static str {
     }
 }
 
+fn is_dangerous_executable_extension(ext: &str) -> bool {
+    matches!(
+        ext.trim().to_ascii_lowercase().as_str(),
+        "bat"
+            | "cmd"
+            | "ps1"
+            | "psm1"
+            | "psd1"
+            | "vbs"
+            | "js"
+            | "jse"
+            | "wsf"
+            | "wsh"
+            | "hta"
+            | "msi"
+            | "com"
+            | "exe"
+            | "scr"
+            | "pif"
+    )
+}
+
+fn should_force_bin_by_file_name(file_name: &str) -> bool {
+    std::path::Path::new(file_name.trim())
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(is_dangerous_executable_extension)
+        .unwrap_or(false)
+}
+
+fn apply_download_extension_policy(file_name: &str, mime: &str) -> String {
+    let normalized = sanitize_download_file_name(file_name);
+    if should_force_bin_by_file_name(&normalized) {
+        let stem = std::path::Path::new(&normalized)
+            .file_stem()
+            .and_then(|v| v.to_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("attachment");
+        return format!("{stem}.bin");
+    }
+    let ext = media_extension_from_mime_for_download(mime);
+    if should_append_download_extension(&normalized, ext) {
+        format!("{normalized}.{ext}")
+    } else {
+        normalized
+    }
+}
+
+fn should_append_download_extension(file_name: &str, ext: &str) -> bool {
+    let file_name = file_name.trim();
+    if file_name.is_empty() || ext.trim().is_empty() {
+        return false;
+    }
+    if ext.eq_ignore_ascii_case("bin") {
+        let has_existing_ext = std::path::Path::new(file_name)
+            .extension()
+            .and_then(|v| v.to_str())
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+        if has_existing_ext {
+            return false;
+        }
+    }
+    !file_name
+        .to_ascii_lowercase()
+        .ends_with(&format!(".{}", ext.to_ascii_lowercase()))
+}
+
 fn sanitize_download_file_name(name: &str) -> String {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -1905,12 +2022,7 @@ fn persist_raw_attachment_to_downloads(
     let dir = workspace_downloads_dir(state);
     fs::create_dir_all(&dir).map_err(|err| format!("Create downloads dir failed: {err}"))?;
 
-    let mut file_name = sanitize_download_file_name(suggested_name);
-    let ext = media_extension_from_mime_for_download(mime);
-    if !file_name.to_ascii_lowercase().ends_with(&format!(".{ext}")) {
-        file_name.push('.');
-        file_name.push_str(ext);
-    }
+    let file_name = apply_download_extension_policy(suggested_name, mime);
     let target = dir.join(file_name);
     let final_target = if target.exists() {
         let stem = target
@@ -1935,7 +2047,64 @@ fn workspace_relative_path(state: &AppState, absolute: &std::path::Path) -> Stri
 }
 
 fn build_attachment_notice_text(file_name: &str, relative_path: &str) -> String {
-    format!("[附件已保存]\n文件：{file_name}\n路径：{relative_path}")
+    format!(
+        "用户本次上传了一个附件：{file_name}\n保存到了你工作区的downloads文件夹内（路径：{relative_path}）\n如果需要，请使用 shell 工具读取该文件内容。"
+    )
+}
+
+fn build_attachment_queued_notice_text(file_name: &str, relative_path: &str) -> String {
+    format!(
+        "用户本次上传了一个附件：{file_name}\n保存到了你工作区的downloads文件夹内（路径：{relative_path}）\n如果需要，请使用 shell 工具读取该文件内容。"
+    )
+}
+
+fn normalize_payload_attachments(
+    raw: Option<&Vec<AttachmentMetaInput>>,
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::<serde_json::Value>::new();
+    let Some(items) = raw else {
+        return out;
+    };
+    for item in items {
+        let file_name = String::from(item.file_name.trim());
+        let relative_path = String::from(item.relative_path.trim()).replace('\\', "/");
+        let mime = String::from(item.mime.trim());
+        if file_name.is_empty() || relative_path.is_empty() {
+            continue;
+        }
+        out.push(serde_json::json!({
+            "fileName": file_name,
+            "relativePath": relative_path,
+            "mime": mime,
+        }));
+    }
+    out
+}
+
+fn merge_provider_meta_with_attachments(
+    provider_meta: Option<Value>,
+    attachments: &[Value],
+) -> Option<Value> {
+    let mut merged = provider_meta.unwrap_or_else(|| serde_json::json!({}));
+    if !merged.is_object() {
+        merged = serde_json::json!({});
+    }
+    if attachments.is_empty() {
+        return if merged.as_object().map(|v| v.is_empty()).unwrap_or(true) {
+            None
+        } else {
+            Some(merged)
+        };
+    }
+    if let Some(obj) = merged.as_object_mut() {
+        obj.insert("attachments".to_string(), Value::Array(attachments.to_vec()));
+    }
+    Some(merged)
+}
+
+fn planned_download_relative_path(file_name: &str, mime: &str) -> String {
+    let normalized = apply_download_extension_policy(file_name, mime);
+    format!("downloads/{normalized}")
 }
 
 fn persist_payload_images_to_workspace_downloads(
@@ -2034,8 +2203,7 @@ fn queue_local_file_attachment(
     let mime = media_mime_from_path(&path)
         .unwrap_or("application/octet-stream")
         .to_string();
-    let saved_path = persist_raw_attachment_to_downloads(state.inner(), &file_name, &mime, &raw)?;
-    let saved_relative_path = workspace_relative_path(state.inner(), &saved_path);
+    let planned_relative_path = planned_download_relative_path(&file_name, &mime);
     let attach_as_media = matches!(
         mime.as_str(),
         "application/pdf"
@@ -2049,18 +2217,26 @@ fn queue_local_file_attachment(
     } else {
         None
     };
-    let text_notice = if attach_as_media {
-        build_attachment_notice_text(&file_name, &saved_relative_path)
+    let (final_file_name, final_saved_path) = if attach_as_media {
+        (file_name.clone(), planned_relative_path)
     } else {
-        format!(
-            "{}\n说明：当前附件类型不会作为多模态输入，已转为文本告知。",
-            build_attachment_notice_text(&file_name, &saved_relative_path)
-        )
+        let saved_path =
+            persist_raw_attachment_to_downloads(state.inner(), &file_name, &mime, &raw)?;
+        let relative_path = workspace_relative_path(state.inner(), &saved_path);
+        let saved_file_name = saved_path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or(file_name.as_str())
+            .to_string();
+        (saved_file_name, relative_path)
     };
+    let text_notice = build_attachment_queued_notice_text(&final_file_name, &final_saved_path);
     Ok(QueueLocalFileAttachmentOutput {
         mime,
-        file_name,
-        saved_path: saved_relative_path,
+        file_name: final_file_name,
+        saved_path: final_saved_path,
         attach_as_media,
         bytes_base64,
         text_notice,
@@ -2317,6 +2493,172 @@ async fn fetch_models_anthropic(input: &RefreshModelsInput) -> Result<Vec<String
     models.sort();
     models.dedup();
     Ok(models)
+}
+
+fn model_id_exact_match(requested_model: &str, candidate_model: &str) -> bool {
+    let requested = requested_model.trim();
+    let candidate = candidate_model.trim();
+    if requested.is_empty() || candidate.is_empty() {
+        return false;
+    }
+    if candidate == requested || candidate.eq_ignore_ascii_case(requested) {
+        return true;
+    }
+    for sep in ['/', ':'] {
+        if let Some((_, suffix)) = candidate.split_once(sep) {
+            let suffix = suffix.trim();
+            if suffix == requested || suffix.eq_ignore_ascii_case(requested) {
+                return true;
+            }
+        }
+    }
+    let requested_norm = normalize_model_id(requested);
+    let candidate_norm = normalize_model_id(candidate);
+    if requested_norm.is_empty() || candidate_norm.is_empty() {
+        return false;
+    }
+    if candidate_norm == requested_norm {
+        return true;
+    }
+    for sep in ['/', ':'] {
+        if let Some((_, suffix)) = candidate.split_once(sep) {
+            let suffix_norm = normalize_model_id(suffix.trim());
+            if suffix_norm == requested_norm {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn normalize_model_id(input: &str) -> String {
+    input
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect::<String>()
+}
+
+#[tauri::command]
+async fn fetch_model_metadata(
+    input: FetchModelMetadataInput,
+) -> Result<FetchModelMetadataOutput, String> {
+    let requested_model = input.model.trim();
+    if requested_model.is_empty() {
+        return Err("Model is empty.".to_string());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|err| format!("Build HTTP client failed: {err}"))?;
+    let resp = client
+        .get("https://models.dev/api.json")
+        .send()
+        .await
+        .map_err(|err| format!("Fetch models.dev metadata failed: {err}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let snippet = body.chars().take(400).collect::<String>();
+        return Err(format!(
+            "Fetch models.dev metadata failed: {status} | {snippet}"
+        ));
+    }
+    let root = resp
+        .json::<Value>()
+        .await
+        .map_err(|err| format!("Parse models.dev metadata failed: {err}"))?;
+    let providers = root
+        .as_object()
+        .ok_or_else(|| "Invalid models.dev payload: expected root object.".to_string())?;
+    let mut best_match: Option<FetchModelMetadataOutput> = None;
+    let mut best_sort_key: Option<(u8, u8, u64, u32, u32, u8)> = None;
+    for provider_obj in providers.values().filter_map(Value::as_object) {
+        let Some(models_obj) = provider_obj.get("models").and_then(Value::as_object) else {
+            continue;
+        };
+        for (model_id, model_value) in models_obj
+            .iter()
+            .filter(|(model_id, _)| model_id_exact_match(requested_model, model_id))
+        {
+            let Some(model_obj) = model_value.as_object() else {
+                continue;
+            };
+            let limit_obj = model_obj.get("limit").and_then(Value::as_object);
+            let context_window_tokens = limit_obj
+                .and_then(|limit| limit.get("context"))
+                .and_then(Value::as_u64)
+                .map(|v| v.min(u64::from(u32::MAX)) as u32);
+            let max_output_tokens = limit_obj
+                .and_then(|limit| limit.get("output"))
+                .and_then(Value::as_u64)
+                .map(|v| v.min(u64::from(u32::MAX)) as u32);
+            let input_modalities = model_obj
+                .get("modalities")
+                .and_then(Value::as_object)
+                .and_then(|modalities| modalities.get("input"))
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(|s| s.to_ascii_lowercase())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let enable_image = input_modalities.iter().any(|item| item.contains("image"));
+            let enable_audio = input_modalities.iter().any(|item| item.contains("audio"));
+            let enable_tools = model_obj
+                .get("tool_call")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            // 冲突时优先“可用信息更完整”，其次“上限更大”。
+            let numeric_count = context_window_tokens.is_some() as u8 + max_output_tokens.is_some() as u8;
+            let capability_count = enable_image as u8 + enable_tools as u8 + enable_audio as u8;
+            let has_any_usable = (numeric_count > 0 || capability_count > 0) as u8;
+            let context_value = context_window_tokens.unwrap_or(0);
+            let output_value = max_output_tokens.unwrap_or(0);
+            let size_sum = u64::from(context_value) + u64::from(output_value);
+            let candidate_sort_key = (
+                has_any_usable,
+                numeric_count,
+                size_sum,
+                context_value,
+                output_value,
+                capability_count,
+            );
+
+            let should_take = match best_sort_key {
+                None => true,
+                Some(current) => candidate_sort_key > current,
+            };
+            if should_take {
+                best_sort_key = Some(candidate_sort_key);
+                best_match = Some(FetchModelMetadataOutput {
+                    found: true,
+                    matched_model_id: Some(model_id.to_string()),
+                    context_window_tokens,
+                    max_output_tokens,
+                    enable_image: Some(enable_image),
+                    enable_tools: Some(enable_tools),
+                    enable_audio: Some(enable_audio),
+                });
+            }
+        }
+    }
+    let Some(best_match) = best_match else {
+        return Ok(FetchModelMetadataOutput {
+            found: false,
+            matched_model_id: None,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            enable_image: None,
+            enable_tools: None,
+            enable_audio: None,
+        });
+    };
+    Ok(best_match)
 }
 
 #[tauri::command]

@@ -84,6 +84,7 @@
           :model-refresh-error="modelRefreshError"
           :config-dirty="configDirty"
           :saving-config="savingConfig"
+          :save-api-config-action="props.saveConfigAction"
           @save-api-config="$emit('saveApiConfig')"
           @add-api-config="$emit('addApiConfig')"
           @remove-selected-api-config="$emit('removeSelectedApiConfig')"

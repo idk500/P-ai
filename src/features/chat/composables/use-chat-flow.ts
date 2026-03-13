@@ -38,6 +38,7 @@ type UseChatFlowOptions = {
   getConversationId?: () => string;
   chatInput: Ref<string>;
   clipboardImages: Ref<Array<{ mime: string; bytesBase64: string; savedPath?: string }>>;
+  queuedAttachmentNotices?: Ref<Array<{ id: string; fileName: string; relativePath: string; mime: string }>>;
   latestUserText: Ref<string>;
   latestUserImages: Ref<Array<{ mime: string; bytesBase64: string }>>;
   latestAssistantText: Ref<string>;
@@ -54,7 +55,10 @@ type UseChatFlowOptions = {
   removeBinaryPlaceholders: (text: string) => string;
   invokeSendChatMessage: (input: {
     text: string;
+    displayText?: string;
     images: Array<{ mime: string; bytesBase64: string; savedPath?: string }>;
+    attachments?: Array<{ fileName: string; relativePath: string; mime: string }>;
+    extraTextBlocks?: string[];
     session: { apiConfigId: string; agentId: string; conversationId?: string };
     onDelta: Channel<AssistantDeltaEvent>;
   }) => Promise<{
@@ -148,6 +152,20 @@ export function useChatFlow(options: UseChatFlowOptions) {
       clearInterval(streamFlushTimer);
       streamFlushTimer = null;
     }
+  }
+
+  function buildQueuedAttachmentPayload(): Array<{ fileName: string; relativePath: string; mime: string }> {
+    const list = options.queuedAttachmentNotices?.value || [];
+    if (list.length === 0) return [];
+    return list
+      .map((item) => {
+        const fileName = String(item.fileName || "").trim();
+        const relativePath = String(item.relativePath || "").trim().replace(/\\/g, "/");
+        const mime = String(item.mime || "").trim();
+        if (!fileName || !relativePath) return null;
+        return { fileName, relativePath, mime };
+      })
+      .filter((v): v is { fileName: string; relativePath: string; mime: string } => !!v);
   }
 
   function resetDisplayedRoundState() {
@@ -474,8 +492,11 @@ export function useChatFlow(options: UseChatFlowOptions) {
   async function sendChat() {
     // 注意：不再检查 forcingArchive 和 chatting，因为后端已通过状态机（MainSessionState）和队列处理并发控制
     // 流式期间和归档期间的消息都会入队，由后端串行处理
-    const text = options.chatInput.value.trim();
-    if (!text && options.clipboardImages.value.length === 0) return;
+    const plainText = options.chatInput.value.trim();
+    const attachments = buildQueuedAttachmentPayload();
+    const text = plainText;
+    const displayText = plainText;
+    if (!text && options.clipboardImages.value.length === 0 && attachments.length === 0) return;
     const sendSession = options.getSession();
     if (!sendSession || !sendSession.apiConfigId || !sendSession.agentId)
       return;
@@ -489,6 +510,9 @@ export function useChatFlow(options: UseChatFlowOptions) {
     const sentImages = [...options.clipboardImages.value];
     options.chatInput.value = "";
     options.clipboardImages.value = [];
+    if (options.queuedAttachmentNotices) {
+      options.queuedAttachmentNotices.value = [];
+    }
 
     const gen = ++requestGeneration;
     if (!wasChatting) {
@@ -503,7 +527,9 @@ export function useChatFlow(options: UseChatFlowOptions) {
     try {
       const result = await options.invokeSendChatMessage({
         text,
+        displayText,
         images: sentImages,
+        attachments: attachments.length > 0 ? attachments : undefined,
         session: {
           ...sendSession,
           conversationId: options.getConversationId ? options.getConversationId() : "",
