@@ -44,7 +44,7 @@ fn normalize_api_tools(config: &mut AppConfig) {
     for api in &mut config.api_configs {
         api.enable_audio = false;
         api.temperature = api.temperature.clamp(0.0, 2.0);
-        api.context_window_tokens = api.context_window_tokens.clamp(16_000, 200_000);
+        api.context_window_tokens = api.context_window_tokens.clamp(16_000, 2_000_000);
         api.max_output_tokens = api.max_output_tokens.clamp(256, 32_768);
         api.failure_retry_count = api.failure_retry_count.clamp(0, 20);
         for tool in &mut api.tools {

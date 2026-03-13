@@ -17,6 +17,7 @@ type UseChatMediaOptions = {
   hasVisionFallback: ComputedRef<boolean>;
   chatInput: Ref<string>;
   clipboardImages: Ref<Array<{ mime: string; bytesBase64: string; savedPath?: string }>>;
+  queuedAttachmentNotices: Ref<Array<{ id: string; fileName: string; relativePath: string; mime: string }>>;
 };
 
 type RejectionReason = "imageUnsupported" | "pdfNeedsImage" | "pdfNeedsGemini";
@@ -321,7 +322,6 @@ export function useChatMedia(options: UseChatMediaOptions) {
     options.setStatus(`收到拖拽文件 ${paths.length} 个（Tauri）。`);
 
     const rejected: RejectionReason[] = [];
-    const textNotices: string[] = [];
     for (const path of paths) {
       try {
         const queued = await invokeTauri<QueuedLocalFileResult>("queue_local_file_attachment", {
@@ -335,7 +335,20 @@ export function useChatMedia(options: UseChatMediaOptions) {
           !!classified.kind;
         if (!canAttachAsMedia) {
           const notice = String(queued.textNotice || "").trim();
-          if (notice) textNotices.push(notice);
+          if (notice) {
+            const savedPath = String(queued.savedPath || "").trim();
+            const relativePath = savedPath.replace(/\\/g, "/").replace(/^.*\/downloads\//, "downloads/");
+            const fileName = String(queued.fileName || "").trim() || relativePath.split("/").pop() || "attachment";
+            const id = `${relativePath || fileName}::${mime}`;
+            if (!options.queuedAttachmentNotices.value.some((item) => item.id === id)) {
+              options.queuedAttachmentNotices.value.push({
+                id,
+                fileName,
+                relativePath: relativePath || savedPath || fileName,
+                mime,
+              });
+            }
+          }
           if (classified.reason) rejected.push(classified.reason);
           continue;
         }
@@ -344,17 +357,10 @@ export function useChatMedia(options: UseChatMediaOptions) {
         options.clipboardImages.value.push({
           mime,
           bytesBase64: base64,
-          savedPath: String(queued.savedPath || "").trim() || undefined,
         });
       } catch (error) {
         options.setStatusError("status.pasteImageReadFailed", error);
       }
-    }
-    if (textNotices.length > 0) {
-      const merged = textNotices.join("\n\n");
-      options.chatInput.value = options.chatInput.value.trim()
-        ? `${options.chatInput.value.trim()}\n\n${merged}`
-        : merged;
     }
 
     notifyRejected(rejected);

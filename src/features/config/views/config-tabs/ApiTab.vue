@@ -36,7 +36,7 @@
           :class="props.configDirty ? 'btn-primary' : 'bg-base-100'"
           :disabled="!props.configDirty || props.savingConfig"
           :title="props.savingConfig ? t('config.api.saving') : props.configDirty ? t('config.api.saveConfig') : t('config.api.saved')"
-          @click="$emit('saveApiConfig')"
+          @click="handleSaveApiConfig"
         >
           <Save v-if="!props.savingConfig" class="h-3.5 w-3.5" />
           <span v-else class="loading loading-spinner loading-sm"></span>
@@ -167,6 +167,9 @@
       <div class="flex w-full items-center justify-between pl-[6.5rem]">
         <span class="text-[11px] text-error min-h-4">{{ props.modelRefreshError || " " }}</span>
       </div>
+      <div v-if="modelControlsLocked" class="pl-[6.5rem] text-[11px] text-warning">
+        {{ t("config.api.saveModelFirstHint") }}
+      </div>
     </div>
 
     <div v-if="isTextMode" class="flex w-full items-center gap-2">
@@ -175,7 +178,7 @@
         <div class="mb-1 flex items-center justify-end">
         <span class="text-sm opacity-70">{{ Number(props.selectedApiConfig.temperature ?? 1).toFixed(1) }}</span>
         </div>
-        <input v-model.number="props.selectedApiConfig.temperature" type="range" min="0" max="2" step="0.1" class="range range-sm w-full" />
+        <input v-model.number="props.selectedApiConfig.temperature" :disabled="modelControlsLocked" type="range" min="0" max="2" step="0.1" class="range range-sm w-full" />
         <div class="mt-1 flex justify-between text-[10px] opacity-60">
           <span>0.0</span>
           <span>1.0</span>
@@ -190,11 +193,19 @@
         <div class="mb-1 flex items-center justify-end">
         <span class="text-sm opacity-70">{{ Math.round(Number(props.selectedApiConfig.contextWindowTokens ?? 128000)) }}</span>
         </div>
-        <input v-model.number="props.selectedApiConfig.contextWindowTokens" type="range" min="16000" max="200000" step="1000" class="range range-sm w-full" />
+        <input
+          v-model.number="props.selectedApiConfig.contextWindowTokens"
+          :disabled="modelControlsLocked"
+          type="range"
+          min="16000"
+          :max="contextWindowMax"
+          step="1000"
+          class="range range-sm w-full"
+        />
         <div class="mt-1 flex justify-between text-[10px] opacity-60">
           <span>16K</span>
           <span>100K</span>
-          <span>200K</span>
+          <span>{{ contextWindowMaxLabel }}</span>
         </div>
       </div>
     </div>
@@ -207,16 +218,17 @@
         </div>
         <input
           v-model.number="props.selectedApiConfig.maxOutputTokens"
+          :disabled="modelControlsLocked"
           type="range"
           min="256"
-          max="32768"
+          :max="maxOutputTokensMax"
           step="256"
           class="range range-sm w-full"
         />
         <div class="mt-1 flex justify-between text-[10px] opacity-60">
           <span>256</span>
           <span>4K</span>
-          <span>32K</span>
+          <span>{{ maxOutputTokensMaxLabel }}</span>
         </div>
         <div class="mt-1 text-[11px] opacity-70">{{ t("config.api.maxOutputTokensHint") }}</div>
       </div>
@@ -230,6 +242,7 @@
         </div>
         <input
           v-model.number="props.selectedApiConfig.failureRetryCount"
+          :disabled="modelControlsLocked"
           type="range"
           min="0"
           max="20"
@@ -248,8 +261,11 @@
     <div v-if="isTextMode" class="flex w-full flex-col gap-1">
       <div class="flex items-center justify-between py-1"><span class="text-sm font-medium">{{ t("config.api.capabilities") }}</span></div>
       <div class="flex w-full gap-2">
-        <label class="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-base-300 bg-base-100 px-2 py-1"><span class="text-sm">{{ t("config.api.capImage") }}</span><input v-model="props.selectedApiConfig.enableImage" type="checkbox" class="toggle toggle-sm" /></label>
-        <label class="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-base-300 bg-base-100 px-2 py-1"><span class="text-sm">{{ t("config.api.capTools") }}</span><input v-model="props.selectedApiConfig.enableTools" type="checkbox" class="toggle toggle-sm" /></label>
+        <label class="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-base-300 bg-base-100 px-2 py-1"><span class="text-sm">{{ t("config.api.capImage") }}</span><input v-model="props.selectedApiConfig.enableImage" :disabled="modelControlsLocked || !imageToggleAvailable" type="checkbox" class="toggle toggle-sm" /></label>
+        <label class="flex flex-1 cursor-pointer items-center justify-between rounded-md border border-base-300 bg-base-100 px-2 py-1"><span class="text-sm">{{ t("config.api.capTools") }}</span><input v-model="props.selectedApiConfig.enableTools" :disabled="modelControlsLocked || !toolsToggleAvailable" type="checkbox" class="toggle toggle-sm" /></label>
+      </div>
+      <div v-if="!imageToggleAvailable || !toolsToggleAvailable" class="text-[11px] opacity-70">
+        {{ t("config.api.capabilityLimitedByModelHint") }}
       </div>
     </div>
   </div>
@@ -284,6 +300,7 @@ const props = defineProps<{
   modelRefreshError: string;
   configDirty: boolean;
   savingConfig: boolean;
+  saveApiConfigAction: () => Promise<boolean> | boolean;
 }>();
 
 const emit = defineEmits<{
@@ -295,12 +312,33 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const CONTEXT_WINDOW_DEFAULT_MAX = 200000;
+const CONTEXT_WINDOW_HARD_MAX = 2000000;
 const baseUrlHelperOpen = ref(false);
 const showApiKey = ref(false);
 const selectedProviderId = ref("openai-official");
 const modelSearch = ref("");
 const activeCapability = ref<ApiCapability>("text");
 const creatingCapabilityDefault = ref(false);
+const applyingModelMetadata = ref(false);
+const savedModelSignatureByApiId = ref<Record<string, string>>({});
+const modelCapabilityByApiId = ref<Record<string, {
+  contextWindowMax?: number;
+  maxOutputTokensMax?: number;
+  enableImage?: boolean;
+  enableTools?: boolean;
+  enableAudio?: boolean;
+}>>({});
+
+type FetchModelMetadataOutput = {
+  found: boolean;
+  matchedModelId?: string | null;
+  contextWindowTokens?: number | null;
+  maxOutputTokens?: number | null;
+  enableImage?: boolean | null;
+  enableTools?: boolean | null;
+  enableAudio?: boolean | null;
+};
 
 const capabilityTabs: Array<{ id: ApiCapability; label: string }> = [
   { id: "text", label: "文本" },
@@ -362,6 +400,45 @@ function capabilityFromConfig(config: ApiConfigItem): ApiCapability {
 
 const currentProtocol = computed<ApiRequestFormat>(() => props.selectedApiConfig?.requestFormat || "openai");
 const isTextMode = computed(() => activeCapability.value === "text");
+const selectedApiId = computed(() => String(props.selectedApiConfig?.id || "").trim());
+const selectedModelSignature = computed(() => {
+  const cfg = props.selectedApiConfig;
+  if (!cfg) return "";
+  return `${String(cfg.model || "").trim()}`;
+});
+const modelChangedButUnsaved = computed(() => {
+  const id = selectedApiId.value;
+  if (!id || !isTextMode.value) return false;
+  const savedSignature = savedModelSignatureByApiId.value[id];
+  if (savedSignature === undefined) return false;
+  return selectedModelSignature.value !== savedSignature;
+});
+const modelControlsLocked = computed(() => isTextMode.value && (modelChangedButUnsaved.value || applyingModelMetadata.value));
+const selectedModelCapability = computed(() => {
+  const id = selectedApiId.value;
+  if (!id) return null;
+  return modelCapabilityByApiId.value[id] ?? null;
+});
+const contextWindowMax = computed(() => {
+  const raw = Number(selectedModelCapability.value?.contextWindowMax ?? CONTEXT_WINDOW_DEFAULT_MAX);
+  if (!Number.isFinite(raw)) return CONTEXT_WINDOW_DEFAULT_MAX;
+  return Math.max(16000, Math.min(CONTEXT_WINDOW_HARD_MAX, Math.round(raw)));
+});
+const maxOutputTokensMax = computed(() => {
+  const raw = Number(selectedModelCapability.value?.maxOutputTokensMax ?? 32768);
+  if (!Number.isFinite(raw)) return 32768;
+  return Math.max(256, Math.min(32768, Math.round(raw)));
+});
+const contextWindowMaxLabel = computed(() => `${Math.round(contextWindowMax.value / 1000)}K`);
+const maxOutputTokensMaxLabel = computed(() => `${Math.round(maxOutputTokensMax.value / 1000)}K`);
+const imageToggleAvailable = computed(() => {
+  const value = selectedModelCapability.value?.enableImage;
+  return value === undefined ? true : !!value;
+});
+const toolsToggleAvailable = computed(() => {
+  const value = selectedModelCapability.value?.enableTools;
+  return value === undefined ? true : !!value;
+});
 const currentProtocolOptions = computed(() => protocolOptionsByCapability[activeCapability.value]);
 const capabilityScopedConfigs = computed(() =>
   props.config.apiConfigs.filter(
@@ -387,11 +464,28 @@ const activeCapabilitySelectedId = computed(() => {
 });
 
 onMounted(() => {
+  savedModelSignatureByApiId.value = Object.fromEntries(
+    props.config.apiConfigs.map((item) => [item.id, String(item.model || "").trim()]),
+  );
   const selected = props.selectedApiConfig;
   if (!selected) return;
   activeCapability.value = capabilityFromConfig(selected);
   ensureCapabilityConfig(activeCapability.value);
 });
+
+watch(
+  () => props.config.apiConfigs,
+  (list) => {
+    const snapshot = { ...savedModelSignatureByApiId.value };
+    for (const item of list) {
+      if (!(item.id in snapshot)) {
+        snapshot[item.id] = String(item.model || "").trim();
+      }
+    }
+    savedModelSignatureByApiId.value = snapshot;
+  },
+  { deep: true },
+);
 
 watch(activeCapability, (capability) => {
   if (!ensureCapabilityConfig(capability)) {
@@ -430,6 +524,32 @@ watch(
   { immediate: true, deep: true },
 );
 
+watch(
+  () => props.selectedApiConfig?.contextWindowTokens,
+  (value) => {
+    const cfg = props.selectedApiConfig;
+    if (!cfg || !isTextMode.value) return;
+    const next = Math.round(Number(value ?? 128000));
+    const clamped = Math.max(16000, Math.min(contextWindowMax.value, next));
+    if (next !== clamped) {
+      cfg.contextWindowTokens = clamped;
+    }
+  },
+);
+
+watch(
+  () => props.selectedApiConfig?.maxOutputTokens,
+  (value) => {
+    const cfg = props.selectedApiConfig;
+    if (!cfg || !isTextMode.value) return;
+    const next = Math.round(Number(value ?? 4096));
+    const clamped = Math.max(256, Math.min(maxOutputTokensMax.value, next));
+    if (next !== clamped) {
+      cfg.maxOutputTokens = clamped;
+    }
+  },
+);
+
 const filteredModels = computed(() => {
   const search = modelSearch.value.trim().toLowerCase();
   if (!search) return props.modelOptions;
@@ -441,6 +561,66 @@ function selectModel(modelName: string) {
     props.selectedApiConfig.model = modelName;
   }
   modelSearch.value = "";
+}
+
+async function applySavedModelMetadata(target: ApiConfigItem) {
+  const model = String(target.model || "").trim();
+  if (!model) return;
+  const metadata = await invokeTauri<FetchModelMetadataOutput>("fetch_model_metadata", {
+    input: {
+      requestFormat: target.requestFormat,
+      model,
+    },
+  });
+  if (!metadata?.found) return;
+  const rawContextMax = Number(metadata.contextWindowTokens ?? target.contextWindowTokens ?? 128000);
+  const rawOutputMax = Number(metadata.maxOutputTokens ?? target.maxOutputTokens ?? 4096);
+  const contextMax = Math.max(16000, Math.min(CONTEXT_WINDOW_HARD_MAX, Math.round(rawContextMax)));
+  const outputMax = Math.max(256, Math.min(32768, Math.round(rawOutputMax)));
+  modelCapabilityByApiId.value = {
+    ...modelCapabilityByApiId.value,
+    [target.id]: {
+      contextWindowMax: contextMax,
+      maxOutputTokensMax: outputMax,
+      enableImage: typeof metadata.enableImage === "boolean" ? metadata.enableImage : undefined,
+      enableTools: typeof metadata.enableTools === "boolean" ? metadata.enableTools : undefined,
+      enableAudio: typeof metadata.enableAudio === "boolean" ? metadata.enableAudio : undefined,
+    },
+  };
+  const currentContext = Math.round(Number(target.contextWindowTokens ?? contextMax));
+  if (!Number.isFinite(currentContext) || currentContext < 16000 || currentContext > contextMax) {
+    target.contextWindowTokens = contextMax;
+  }
+  const currentOutput = Math.round(Number(target.maxOutputTokens ?? outputMax));
+  if (!Number.isFinite(currentOutput) || currentOutput < 256 || currentOutput > outputMax) {
+    target.maxOutputTokens = outputMax;
+  }
+  if (typeof metadata.enableImage === "boolean" && !metadata.enableImage) {
+    target.enableImage = false;
+  }
+  if (typeof metadata.enableTools === "boolean" && !metadata.enableTools) {
+    target.enableTools = false;
+  }
+}
+
+async function handleSaveApiConfig() {
+  const target = props.selectedApiConfig;
+  const saved = await Promise.resolve(props.saveApiConfigAction());
+  if (!saved || !target) return;
+  const signature = String(target.model || "").trim();
+  savedModelSignatureByApiId.value = {
+    ...savedModelSignatureByApiId.value,
+    [target.id]: signature,
+  };
+  if (!isTextMode.value) return;
+  applyingModelMetadata.value = true;
+  try {
+    await applySavedModelMetadata(target);
+  } catch (error) {
+    console.warn("[API] fetch_model_metadata failed:", error);
+  } finally {
+    applyingModelMetadata.value = false;
+  }
 }
 
 const providerPresets: ProviderPreset[] = [

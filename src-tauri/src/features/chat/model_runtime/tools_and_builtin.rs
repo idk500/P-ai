@@ -1698,6 +1698,7 @@ async fn delegate_execute_agent_run(
             display_text: None,
             images: None,
             audios: None,
+            attachments: None,
             model: None,
             extra_text_blocks: None,
             provider_meta: Some(delegate_build_trigger_provider_meta(delegate, root_conversation_id)),

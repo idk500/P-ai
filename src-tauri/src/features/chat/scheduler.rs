@@ -654,6 +654,7 @@ async fn activate_main_assistant(
             display_text: None,
             images: None,
             audios: None,
+            attachments: None,
             model: None,
             extra_text_blocks: None,
             provider_meta: None,

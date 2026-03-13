@@ -2,6 +2,7 @@ import { computed, type ComputedRef, type Ref, type ShallowRef } from "vue";
 import type { ApiConfigItem, ChatMessage, ChatMessageBlock, TaskTriggerMessageCard } from "../../../types/app";
 import {
   estimateConversationTokens,
+  extractMessageAttachmentFiles,
   extractMessageAudios,
   extractMessageImages,
   parseAssistantStoredText,
@@ -118,6 +119,7 @@ export function useChatMessageBlocks(options: UseChatMessageBlocksOptions) {
         text: message.role === "assistant" ? parsed.assistantText : rendered,
         images: extractMessageImages(message),
         audios: extractMessageAudios(message),
+        attachmentFiles: extractMessageAttachmentFiles(message),
         taskTrigger: resolveTaskTrigger(message),
         reasoningStandard:
           parsed.reasoningStandard
@@ -133,6 +135,7 @@ export function useChatMessageBlocks(options: UseChatMessageBlocksOptions) {
       block.text
       || block.images.length > 0
       || block.audios.length > 0
+      || block.attachmentFiles.length > 0
       || !!block.taskTrigger
       || !!block.reasoningStandard
       || !!block.reasoningInline,
@@ -158,7 +161,7 @@ export function useChatMessageBlocks(options: UseChatMessageBlocksOptions) {
     }
     const api = options.activeChatApiConfig.value;
     if (!api) return 0;
-    const maxTokens = Math.max(16000, Math.min(200000, Number(api.contextWindowTokens ?? 128000)));
+    const maxTokens = Math.max(16000, Math.round(Number(api.contextWindowTokens ?? 128000)));
     const used = estimateConversationTokens(options.allMessages.value);
     return used / Math.max(1, maxTokens);
   });

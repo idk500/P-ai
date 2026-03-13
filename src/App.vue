@@ -80,6 +80,7 @@
       :stream-tool-calls="streamToolCalls"
       :chat-error-text="chatErrorText"
       :clipboard-images="clipboardImages"
+      :queued-attachment-notices="queuedAttachmentNotices"
       :chat-input="chatInput"
       :chat-input-placeholder="chatInputPlaceholder"
       :speech-recognition-supported="speechRecognitionSupported"
@@ -147,6 +148,8 @@
       :clear-agent-avatar="clearAgentAvatar"
       :update-chat-input="(value) => { chatInput = value; }"
       :remove-clipboard-image="removeClipboardImage"
+      :remove-queued-attachment-notice="removeQueuedAttachmentNotice"
+      :pick-attachments="pickChatAttachments"
       :start-recording="startRecording"
       :stop-recording="() => stopRecording(false)"
       :send-chat="chatFlow.sendChat"
@@ -385,6 +388,7 @@ const toolStatusState = ref<"running" | "done" | "failed" | "">("");
 const streamToolCalls = ref<Array<{ name: string; argsText: string }>>([]);
 const chatErrorText = ref("");
 const clipboardImages = ref<Array<{ mime: string; bytesBase64: string; savedPath?: string }>>([]);
+const queuedAttachmentNotices = ref<Array<{ id: string; fileName: string; relativePath: string; mime: string }>>([]);
 
 const allMessages = shallowRef<ChatMessage[]>([]);
 const visibleMessageBlockCount = ref(1);
@@ -662,6 +666,7 @@ const chatMedia = useChatMedia({
   hasVisionFallback,
   chatInput,
   clipboardImages,
+  queuedAttachmentNotices,
 });
 const hotkeyTestRecording = chatMedia.hotkeyTestRecording;
 const hotkeyTestRecordingMs = chatMedia.hotkeyTestRecordingMs;
@@ -672,10 +677,34 @@ const onDragOver = chatMedia.onDragOver;
 const onDrop = chatMedia.onDrop;
 const onNativeFileDrop = chatMedia.onNativeFileDrop;
 const removeClipboardImage = chatMedia.removeClipboardImage;
+function removeQueuedAttachmentNotice(index: number) {
+  if (index < 0 || index >= queuedAttachmentNotices.value.length) return;
+  queuedAttachmentNotices.value.splice(index, 1);
+}
 const startHotkeyRecordTest = chatMedia.startHotkeyRecordTest;
 const stopHotkeyRecordTest = chatMedia.stopHotkeyRecordTest;
 const playHotkeyRecordTest = chatMedia.playHotkeyRecordTest;
 const cleanupChatMedia = chatMedia.cleanupChatMedia;
+
+async function pickChatAttachments() {
+  if (chatting.value || forcingArchive.value) return;
+  try {
+    const picked = await open({
+      multiple: true,
+      directory: false,
+      title: "选择附件",
+    });
+    if (!picked) return;
+    const paths = Array.isArray(picked) ? picked : [picked];
+    const normalized = paths
+      .map((v) => String(v || "").trim())
+      .filter(Boolean);
+    if (normalized.length === 0) return;
+    await onNativeFileDrop(normalized);
+  } catch (error) {
+    setStatusError("status.pasteImageReadFailed", error);
+  }
+}
 const recordHotkey = useRecordHotkey({
   isActive: () => viewMode.value === "chat",
   getRecordHotkey: () => config.recordHotkey,
@@ -1519,6 +1548,7 @@ const chatFlow = useChatFlow({
   getConversationId: () => String(currentChatConversationId.value || "").trim(),
   chatInput,
   clipboardImages,
+  queuedAttachmentNotices,
   latestUserText,
   latestUserImages,
   latestAssistantText,
@@ -1533,10 +1563,16 @@ const chatFlow = useChatFlow({
   t: tr,
   formatRequestFailed: (error) => formatI18nError(tr, "status.requestFailed", error),
   removeBinaryPlaceholders,
-  invokeSendChatMessage: ({ text, images, session, onDelta }) =>
+  invokeSendChatMessage: ({ text, displayText, images, attachments, extraTextBlocks, session, onDelta }) =>
     invokeTauri("send_chat_message", {
       input: {
-        payload: { text, images },
+        payload: {
+          text,
+          displayText,
+          images,
+          attachments: attachments && attachments.length > 0 ? attachments : undefined,
+          extraTextBlocks: extraTextBlocks && extraTextBlocks.length > 0 ? extraTextBlocks : undefined,
+        },
         session: {
           apiConfigId: session.apiConfigId,
           agentId: session.agentId,
