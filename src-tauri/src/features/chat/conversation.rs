@@ -484,6 +484,27 @@ fn render_message_content_for_model(message: &ChatMessage) -> String {
         {
             chunks.push(hidden_prompt_text.to_string());
         }
+        if let Some(attachments) = meta.get("attachments").and_then(Value::as_array) {
+            for item in attachments {
+                let file_name = item
+                    .get("fileName")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                let relative_path = item
+                    .get("relativePath")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                if file_name.is_empty() || relative_path.is_empty() {
+                    continue;
+                }
+                chunks.push(format!(
+                    "用户本次上传了一个附件：{}\n保存到了你工作区的downloads文件夹内（路径：{}）\n如果需要，请使用 shell 工具读取该文件内容。",
+                    file_name, relative_path
+                ));
+            }
+        }
     }
     chunks.join(" | ")
 }
@@ -1235,6 +1256,32 @@ fn build_prompt_with_mode(
                 latest_user_extra_text.push('\n');
             }
             latest_user_extra_text.push_str(&extra);
+        }
+        if let Some(meta) = msg.provider_meta.as_ref() {
+            if let Some(attachments) = meta.get("attachments").and_then(Value::as_array) {
+                for item in attachments {
+                    let file_name = item
+                        .get("fileName")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .unwrap_or("");
+                    let relative_path = item
+                        .get("relativePath")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .unwrap_or("");
+                    if file_name.is_empty() || relative_path.is_empty() {
+                        continue;
+                    }
+                    if !latest_user_extra_text.is_empty() {
+                        latest_user_extra_text.push('\n');
+                    }
+                    latest_user_extra_text.push_str(&format!(
+                        "用户本次上传了一个附件：{}\n保存到了你工作区的downloads文件夹内（路径：{}）\n如果需要，请使用 shell 工具读取该文件内容。",
+                        file_name, relative_path
+                    ));
+                }
+            }
         }
     }
 

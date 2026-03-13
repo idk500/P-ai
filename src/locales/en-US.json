@@ -96,7 +96,9 @@
       "capabilities": "Capabilities",
       "capText": "Text",
       "capImage": "Image",
-      "capTools": "Tools"
+      "capTools": "Tools",
+      "saveModelFirstHint": "Model changed. Save the model first, then limits and capabilities will be updated from model metadata.",
+      "capabilityLimitedByModelHint": "Some capability toggles are limited by the current model metadata."
     },
     "welcome": {
       "title": "Welcome Setup Check",
@@ -521,6 +523,7 @@
     "stop": "Stop",
     "stopReplying": "Stop Replying",
     "dropImageOrPdf": "Drop files (images/PDF can be multimodal)",
+    "attach": "Attach files",
     "copy": "Copy",
     "regenerate": "Regenerate",
     "recall": "Recall",

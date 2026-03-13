@@ -677,11 +677,22 @@ struct ChatInputPayload {
     display_text: Option<String>,
     images: Option<Vec<BinaryPart>>,
     audios: Option<Vec<BinaryPart>>,
+    #[serde(default)]
+    attachments: Option<Vec<AttachmentMetaInput>>,
     model: Option<String>,
     #[serde(default)]
     extra_text_blocks: Option<Vec<String>>,
     #[serde(default)]
     provider_meta: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentMetaInput {
+    file_name: String,
+    relative_path: String,
+    #[serde(default)]
+    mime: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -786,6 +797,25 @@ struct RefreshModelsInput {
     base_url: String,
     api_key: String,
     request_format: RequestFormat,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FetchModelMetadataInput {
+    request_format: RequestFormat,
+    model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FetchModelMetadataOutput {
+    found: bool,
+    matched_model_id: Option<String>,
+    context_window_tokens: Option<u32>,
+    max_output_tokens: Option<u32>,
+    enable_image: Option<bool>,
+    enable_tools: Option<bool>,
+    enable_audio: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
