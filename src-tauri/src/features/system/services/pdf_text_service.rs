@@ -149,38 +149,6 @@ fn normalize_pdf_page_text_once(input: &str) -> String {
     out
 }
 
-fn extract_pdf_page_images(
-    doc: &mut pdf_oxide::api::Pdf,
-    page_index: usize,
-) -> Result<Vec<PdfRenderedImage>, String> {
-    let images = doc
-        .extract_images(page_index)
-        .map_err(|err| format!("pdf_oxide extract_images(page={}) failed: {}", page_index, err))?;
-    let mut out = Vec::<PdfRenderedImage>::new();
-    for image in images {
-        let source_bytes = match image.data() {
-            pdf_oxide::extractors::ImageData::Jpeg(data) => data.to_vec(),
-            _ => image
-                .to_png_bytes()
-                .map_err(|err| format!("pdf_oxide to_png_bytes(page={}) failed: {}", page_index, err))?,
-        };
-        let dyn_img = image::load_from_memory(&source_bytes)
-            .map_err(|err| format!("image decode failed(page={}): {}", page_index, err))?;
-        let encoder = webp::Encoder::from_image(&dyn_img)
-            .map_err(|err| format!("webp encoder init failed(page={}): {}", page_index, err))?;
-        let webp = encoder.encode(50.0);
-        let webp_bytes: &[u8] = webp.as_ref();
-        out.push(PdfRenderedImage {
-            page_index,
-            width: image.width(),
-            height: image.height(),
-            bytes_base64: B64.encode(webp_bytes),
-            mime: "image/webp".to_string(),
-        });
-    }
-    Ok(out)
-}
-
 fn encode_rgba_page_to_webp(
     page_index: usize,
     width: u32,
