@@ -219,7 +219,10 @@ fn archive_pipeline_message_plain_text(message: &ChatMessage) -> String {
     clean_text(blocks.join("\n").trim())
 }
 
-fn build_archive_summary_from_last_three_rounds(source: &Conversation) -> String {
+fn archive_pipeline_recent_user_assistant_messages(
+    source: &Conversation,
+    max_messages: usize,
+) -> Vec<(String, String)> {
     let mut recent = Vec::<(String, String)>::new();
     for message in source.messages.iter().rev() {
         let role = message.role.trim();
@@ -231,11 +234,70 @@ fn build_archive_summary_from_last_three_rounds(source: &Conversation) -> String
             continue;
         }
         recent.push((role.to_string(), text));
-        if recent.len() >= 6 {
+        if recent.len() >= max_messages {
             break;
         }
     }
     recent.reverse();
+    recent
+}
+
+fn archive_pipeline_is_compression_text(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return false;
+    }
+    lower.contains("上下文压缩")
+        || lower.contains("压缩摘要")
+        || lower.contains("context compression")
+        || lower.contains("context compact")
+}
+
+fn archive_pipeline_collect_compression_texts(source: &Conversation) -> Vec<String> {
+    let mut blocks = Vec::<String>::new();
+    for message in &source.messages {
+        if message.role.trim() != "user" && message.role.trim() != "assistant" {
+            continue;
+        }
+        let text = archive_pipeline_message_plain_text(message);
+        if text.is_empty() || !archive_pipeline_is_compression_text(&text) {
+            continue;
+        }
+        blocks.push(text);
+    }
+    blocks
+}
+
+fn build_archive_summary_from_compression_and_last_three_rounds(
+    source: &Conversation,
+) -> Result<String, String> {
+    let compression_blocks = archive_pipeline_collect_compression_texts(source);
+    if compression_blocks.is_empty() {
+        return Err("no compression messages found".to_string());
+    }
+    let recent = archive_pipeline_recent_user_assistant_messages(source, 6);
+    let mut lines = Vec::<String>::new();
+    lines.push("归档降级摘要（压缩内容 + 最后三轮正文对话）：".to_string());
+    lines.push("【压缩内容】".to_string());
+    for (idx, block) in compression_blocks.iter().enumerate() {
+        let snippet = block.chars().take(360).collect::<String>();
+        lines.push(format!("C{}. {}", idx + 1, snippet));
+    }
+    lines.push("【最近对话】".to_string());
+    if recent.is_empty() {
+        lines.push("最近对话暂无可用正文。".to_string());
+    } else {
+        for (idx, (role, text)) in recent.iter().enumerate() {
+            let speaker = if role == "user" { "用户" } else { "助理" };
+            let snippet = text.chars().take(240).collect::<String>();
+            lines.push(format!("{}. {}：{}", idx + 1, speaker, snippet));
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+fn build_archive_summary_from_last_three_rounds(source: &Conversation) -> String {
+    let recent = archive_pipeline_recent_user_assistant_messages(source, 6);
     if recent.is_empty() {
         return "归档降级摘要：最近对话暂无可用正文。".to_string();
     }
@@ -485,12 +547,27 @@ async fn run_archive_pipeline_inner(
     .await {
         Ok(parsed) => parsed,
         Err(err) => {
-            let fallback_summary = build_archive_summary_from_last_three_rounds(source);
-            archive_warning = Some(format!("归档模型失败，已使用最后三轮正文对话降级摘要：{err}"));
-            eprintln!(
-                "[ARCHIVE-PIPELINE] summary model failed, fallback to last-three-rounds summary: trace_id={}, conversation_id={}, err={}",
-                trace_id, source.id, err
-            );
+            let fallback_summary = match build_archive_summary_from_compression_and_last_three_rounds(source) {
+                Ok(summary) => {
+                    archive_warning = Some(format!("归档模型失败，已使用压缩内容+最后三轮正文对话降级摘要：{err}"));
+                    eprintln!(
+                        "[ARCHIVE-PIPELINE] 归档模型失败，已降级到 压缩内容+最后三轮 正文摘要: trace_id={}, conversation_id={}, err={}",
+                        trace_id, source.id, err
+                    );
+                    summary
+                }
+                Err(compression_err) => {
+                    archive_warning = Some(format!(
+                        "归档模型失败，压缩降级失败，已使用最后三轮正文对话降级摘要：{}（压缩降级原因：{}）",
+                        err, compression_err
+                    ));
+                    eprintln!(
+                        "[ARCHIVE-PIPELINE] 归档模型失败，压缩降级也失败，已降级到 最后三轮 正文摘要: trace_id={}, conversation_id={}, err={}, compression_err={}",
+                        trace_id, source.id, err, compression_err
+                    );
+                    build_archive_summary_from_last_three_rounds(source)
+                }
+            };
             ArchiveSummaryDraft {
                 summary: fallback_summary,
                 useful_memory_ids: Vec::new(),
