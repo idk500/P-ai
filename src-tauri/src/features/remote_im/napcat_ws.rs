@@ -55,6 +55,7 @@ fn default_ws_port() -> u16 {
 }
 
 const NAPCAT_RECONNECT_INTERVAL_SECS: u64 = 30;
+const NAPCAT_MAX_MEDIA_DOWNLOAD_SIZE_BYTES: u64 = 20 * 1024 * 1024;
 
 impl NapcatCredentials {
     pub fn from_credentials(credentials: &Value) -> Self {
@@ -670,10 +671,25 @@ pub async fn get_channel_logs(channel_id: String) -> Result<Vec<ChannelLogEntry>
 
 // ==================== OneBot v11 事件消费 ====================
 
-/// 从 OneBot v11 message 数组格式中提取文本和图片 URL
-fn parse_onebot_message_array(segments: &[Value]) -> (String, Vec<String>) {
+#[derive(Debug, Clone)]
+enum OnebotInboundMediaKind {
+    Image,
+    File,
+}
+
+#[derive(Debug, Clone)]
+struct OnebotInboundMediaRef {
+    kind: OnebotInboundMediaKind,
+    file_ref: String,
+    file_id: Option<String>,
+    file_name: Option<String>,
+    mime_hint: Option<String>,
+}
+
+/// 从 OneBot v11 message 数组格式中提取文本和媒体引用
+fn parse_onebot_message_array(segments: &[Value]) -> (String, Vec<OnebotInboundMediaRef>) {
     let mut texts = Vec::new();
-    let mut image_urls = Vec::new();
+    let mut media_refs = Vec::<OnebotInboundMediaRef>::new();
 
     for seg in segments {
         let seg_type = seg.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -687,10 +703,30 @@ fn parse_onebot_message_array(segments: &[Value]) -> (String, Vec<String>) {
                 }
             }
             "image" => {
-                if let Some(url) = data.and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
-                    if !url.trim().is_empty() {
-                        image_urls.push(url.to_string());
-                    }
+                let file_ref = data
+                    .and_then(|d| d.get("url"))
+                    .and_then(Value::as_str)
+                    .or_else(|| data.and_then(|d| d.get("file")).and_then(Value::as_str))
+                    .map(str::trim)
+                    .unwrap_or("");
+                if !file_ref.is_empty() {
+                    media_refs.push(OnebotInboundMediaRef {
+                        kind: OnebotInboundMediaKind::Image,
+                        file_ref: file_ref.to_string(),
+                        file_id: data
+                            .and_then(|d| d.get("file_id"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(ToOwned::to_owned),
+                        file_name: data
+                            .and_then(|d| d.get("name"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(ToOwned::to_owned),
+                        mime_hint: None,
+                    });
                 }
             }
             "at" => {
@@ -709,14 +745,42 @@ fn parse_onebot_message_array(segments: &[Value]) -> (String, Vec<String>) {
                     texts.push(format!("[表情:{}]", id));
                 }
             }
-            "reply" | "forward" | "record" | "video" | "file" | "poke" => {
-                // 暂时以标签占位
+            "file" => {
+                let file_ref = data
+                    .and_then(|d| d.get("url"))
+                    .and_then(Value::as_str)
+                    .or_else(|| data.and_then(|d| d.get("file")).and_then(Value::as_str))
+                    .map(str::trim)
+                    .unwrap_or("");
+                if !file_ref.is_empty() {
+                    media_refs.push(OnebotInboundMediaRef {
+                        kind: OnebotInboundMediaKind::File,
+                        file_ref: file_ref.to_string(),
+                        file_id: data
+                            .and_then(|d| d.get("file_id"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(ToOwned::to_owned),
+                        file_name: data
+                            .and_then(|d| d.get("name"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(ToOwned::to_owned),
+                        mime_hint: None,
+                    });
+                } else {
+                    texts.push("[file]".to_string());
+                }
+            }
+            "reply" | "forward" | "record" | "video" | "poke" => {
                 texts.push(format!("[{}]", seg_type));
             }
             _ => {}
         }
     }
-    (texts.join(""), image_urls)
+    (texts.join(""), media_refs)
 }
 
 /// 从 CQ 码字符串中提取纯文本（剥离 [CQ:...] 标签）
@@ -744,12 +808,12 @@ fn parse_onebot_cq_string(raw: &str) -> String {
     result
 }
 
-fn extract_message_content(event: &Value) -> (String, Vec<String>) {
+fn extract_message_content(event: &Value) -> (String, Vec<OnebotInboundMediaRef>) {
     let message_field = event.get("message");
     if let Some(arr) = message_field.and_then(|v| v.as_array()) {
         let result = parse_onebot_message_array(arr);
         eprintln!(
-            "[NapCat Event] 解析数组格式 message: text_len={}, images={}",
+            "[NapCat Event] 解析数组格式 message: text_len={}, media_items={}",
             result.0.len(),
             result.1.len()
         );
@@ -839,6 +903,463 @@ fn message_field_kind(message_field: Option<&Value>) -> &'static str {
         .unwrap_or("missing")
 }
 
+fn mime_from_name_or_hint(file_name: &str, mime_hint: Option<&str>) -> String {
+    if let Some(hint) = mime_hint
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_ascii_lowercase())
+    {
+        return hint;
+    }
+    media_mime_from_path(std::path::Path::new(file_name))
+        .unwrap_or("application/octet-stream")
+        .to_string()
+}
+
+fn onebot_guess_name_from_ref(file_ref: &str, fallback: &str) -> String {
+    if let Some(pos) = file_ref.rfind('/') {
+        let candidate = file_ref[(pos + 1)..].trim();
+        if !candidate.is_empty() && !candidate.contains('?') {
+            return candidate.to_string();
+        }
+    }
+    if let Some(pos) = file_ref.rfind('\\') {
+        let candidate = file_ref[(pos + 1)..].trim();
+        if !candidate.is_empty() {
+            return candidate.to_string();
+        }
+    }
+    fallback.to_string()
+}
+
+async fn onebot_read_media_bytes(file_ref: &str) -> Result<(Vec<u8>, Option<String>), String> {
+    let raw = file_ref.trim();
+    if raw.is_empty() {
+        return Err("empty file ref".to_string());
+    }
+    if let Some(b64) = raw.strip_prefix("base64://") {
+        let bytes = B64
+            .decode(b64.trim())
+            .map_err(|err| format!("decode onebot base64 media failed: {err}"))?;
+        return Ok((bytes, None));
+    }
+    if raw.starts_with("http://") || raw.starts_with("https://") {
+        return onebot_download_media_by_url(raw, None).await;
+    }
+
+    let local_path = if let Some(without_scheme) = raw.strip_prefix("file://") {
+        if let Some(win) = without_scheme.strip_prefix('/') {
+            std::path::Path::new(win).to_path_buf()
+        } else {
+            std::path::Path::new(without_scheme).to_path_buf()
+        }
+    } else {
+        std::path::Path::new(raw).to_path_buf()
+    };
+    if !local_path.is_absolute() {
+        return Err(format!(
+            "onebot local media ref is relative, unsupported: {}",
+            local_path.to_string_lossy()
+        ));
+    }
+    let bytes = tokio::fs::read(&local_path)
+        .await
+        .map_err(|err| format!("read onebot local media failed: path={}, err={err}", local_path.to_string_lossy()))?;
+    Ok((bytes, None))
+}
+
+async fn onebot_download_media_by_url(
+    url: &str,
+    headers: Option<reqwest::header::HeaderMap>,
+) -> Result<(Vec<u8>, Option<String>), String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|err| format!("build onebot media download client failed: {err}"))?;
+    let mut request = client.get(url);
+    if let Some(h) = headers {
+        request = request.headers(h);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("download onebot media failed: {err}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("download onebot media rejected http {}", status.as_u16()));
+    }
+    if let Some(content_len) = response.content_length() {
+        if content_len > NAPCAT_MAX_MEDIA_DOWNLOAD_SIZE_BYTES {
+            return Err(format!(
+                "onebot media too large: {} > {}",
+                content_len, NAPCAT_MAX_MEDIA_DOWNLOAD_SIZE_BYTES
+            ));
+        }
+    }
+    let header_mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned);
+    let mut stream = response.bytes_stream();
+    let mut total = 0u64;
+    let mut bytes = Vec::<u8>::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| format!("read onebot media stream failed: {err}"))?;
+        total = total.saturating_add(chunk.len() as u64);
+        if total > NAPCAT_MAX_MEDIA_DOWNLOAD_SIZE_BYTES {
+            return Err(format!(
+                "onebot media too large while streaming: {} > {}",
+                total, NAPCAT_MAX_MEDIA_DOWNLOAD_SIZE_BYTES
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok((bytes, header_mime))
+}
+
+fn onebot_extract_file_ref_from_get_file_response(value: &Value) -> Option<String> {
+    let direct = value
+        .get("url")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("download_url").and_then(Value::as_str))
+        .or_else(|| value.get("path").and_then(Value::as_str))
+        .or_else(|| value.get("file").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned);
+    if direct.is_some() {
+        return direct;
+    }
+    let nested = value.get("data").and_then(Value::as_object)?;
+    nested
+        .get("url")
+        .and_then(Value::as_str)
+        .or_else(|| nested.get("download_url").and_then(Value::as_str))
+        .or_else(|| nested.get("path").and_then(Value::as_str))
+        .or_else(|| nested.get("file").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn onebot_extract_string_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .or_else(|| value.get("data").and_then(|v| v.get(key)).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn onebot_extract_headers_field(value: &Value) -> Option<reqwest::header::HeaderMap> {
+    let raw_headers = value
+        .get("headers")
+        .or_else(|| value.get("data").and_then(|v| v.get("headers")))?;
+    let mut out = reqwest::header::HeaderMap::new();
+    if let Some(obj) = raw_headers.as_object() {
+        for (k, v) in obj {
+            let key = k.trim();
+            let val = v.as_str().map(str::trim).unwrap_or("");
+            if key.is_empty() || val.is_empty() {
+                continue;
+            }
+            let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) else {
+                continue;
+            };
+            let Ok(value) = reqwest::header::HeaderValue::from_str(val) else {
+                continue;
+            };
+            out.insert(name, value);
+        }
+    } else if let Some(arr) = raw_headers.as_array() {
+        for item in arr {
+            let Some(pair) = item.as_array() else {
+                continue;
+            };
+            if pair.len() != 2 {
+                continue;
+            }
+            let key = pair[0].as_str().map(str::trim).unwrap_or("");
+            let val = pair[1].as_str().map(str::trim).unwrap_or("");
+            if key.is_empty() || val.is_empty() {
+                continue;
+            }
+            let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_bytes()) else {
+                continue;
+            };
+            let Ok(value) = reqwest::header::HeaderValue::from_str(val) else {
+                continue;
+            };
+            out.insert(name, value);
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+async fn onebot_get_file_with_type(
+    manager: &NapcatWsManager,
+    channel_id: &str,
+    file_id: &str,
+    group_id: Option<u64>,
+    user_id: Option<u64>,
+) -> Result<(Vec<u8>, Option<String>), String> {
+    let file_id = file_id.trim();
+    if file_id.is_empty() {
+        return Err("onebot file_id is empty".to_string());
+    }
+
+    async fn call_action_try_params(
+        manager: &NapcatWsManager,
+        channel_id: &str,
+        action: &str,
+        params_list: &[Value],
+    ) -> Result<Value, String> {
+        let mut last_err = String::new();
+        for params in params_list {
+            match manager.call_api(channel_id, action, params.clone(), 5000).await {
+                Ok(v) => return Ok(v),
+                Err(err) => last_err = err,
+            }
+        }
+        Err(format!(
+            "all attempts failed for action={}, last_err={}",
+            action, last_err
+        ))
+    }
+
+    let try_url = call_action_try_params(
+        manager,
+        channel_id,
+        "get_file",
+        &[
+            serde_json::json!({ "file_id": file_id, "type": "url" }),
+            serde_json::json!({ "file": file_id, "type": "url" }),
+            serde_json::json!({ "id": file_id, "type": "url" }),
+            serde_json::json!({ "file_id": file_id }),
+            serde_json::json!({ "file": file_id }),
+        ],
+    )
+    .await;
+    if let Ok(value) = try_url {
+        if let Some(url) = onebot_extract_string_field(&value, "url")
+            .or_else(|| onebot_extract_string_field(&value, "download_url"))
+            .or_else(|| onebot_extract_file_ref_from_get_file_response(&value))
+        {
+            let headers = onebot_extract_headers_field(&value);
+            if let Ok(ok) = onebot_download_media_by_url(&url, headers).await {
+                return Ok(ok);
+            }
+        }
+    }
+
+    let try_path = call_action_try_params(
+        manager,
+        channel_id,
+        "get_file",
+        &[
+            serde_json::json!({ "file_id": file_id, "type": "path" }),
+            serde_json::json!({ "file": file_id, "type": "path" }),
+            serde_json::json!({ "id": file_id, "type": "path" }),
+        ],
+    )
+    .await;
+    if let Ok(value) = try_path {
+        if let Some(path) = onebot_extract_string_field(&value, "path")
+            .or_else(|| onebot_extract_string_field(&value, "file"))
+            .or_else(|| onebot_extract_file_ref_from_get_file_response(&value))
+        {
+            if let Ok(ok) = onebot_read_media_bytes(&path).await {
+                return Ok(ok);
+            }
+        }
+    }
+
+    let try_data = call_action_try_params(
+        manager,
+        channel_id,
+        "get_file",
+        &[
+            serde_json::json!({ "file_id": file_id, "type": "data" }),
+            serde_json::json!({ "file": file_id, "type": "data" }),
+            serde_json::json!({ "id": file_id, "type": "data" }),
+        ],
+    )
+    .await;
+    if let Ok(value) = try_data {
+        if let Some(data_raw) = onebot_extract_string_field(&value, "data")
+            .or_else(|| onebot_extract_string_field(&value, "base64"))
+        {
+            let data_raw = data_raw.trim();
+            let data_raw = data_raw.strip_prefix("base64://").unwrap_or(data_raw);
+            let bytes = B64
+                .decode(data_raw)
+                .map_err(|err| format!("decode onebot get_file(data) base64 failed: {err}"))?;
+            let mime = onebot_extract_string_field(&value, "mime");
+            return Ok((bytes, mime));
+        }
+    }
+
+    if let Some(gid) = group_id {
+        let try_group_url = call_action_try_params(
+            manager,
+            channel_id,
+            "get_group_file_url",
+            &[serde_json::json!({ "group_id": gid, "file_id": file_id })],
+        )
+        .await;
+        if let Ok(value) = try_group_url {
+            if let Some(url) = onebot_extract_string_field(&value, "url")
+                .or_else(|| onebot_extract_string_field(&value, "download_url"))
+                .or_else(|| onebot_extract_file_ref_from_get_file_response(&value))
+            {
+                let headers = onebot_extract_headers_field(&value);
+                if let Ok(ok) = onebot_download_media_by_url(&url, headers).await {
+                    return Ok(ok);
+                }
+            }
+        }
+    }
+
+    if let Some(uid) = user_id {
+        let try_private_url = call_action_try_params(
+            manager,
+            channel_id,
+            "get_private_file_url",
+            &[
+                serde_json::json!({ "user_id": uid, "file_id": file_id }),
+                serde_json::json!({ "file_id": file_id }),
+            ],
+        )
+        .await;
+        if let Ok(value) = try_private_url {
+            if let Some(url) = onebot_extract_string_field(&value, "url")
+                .or_else(|| onebot_extract_string_field(&value, "download_url"))
+                .or_else(|| onebot_extract_file_ref_from_get_file_response(&value))
+            {
+                let headers = onebot_extract_headers_field(&value);
+                if let Ok(ok) = onebot_download_media_by_url(&url, headers).await {
+                    return Ok(ok);
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "onebot get_file unresolved for file_id={}",
+        file_id
+    ))
+}
+
+async fn onebot_resolve_inbound_media(
+    manager: &NapcatWsManager,
+    channel_id: &str,
+    group_id: Option<u64>,
+    user_id: Option<u64>,
+    state: &AppState,
+    media_refs: &[OnebotInboundMediaRef],
+) -> (Vec<BinaryPart>, Vec<AttachmentMetaInput>) {
+    let mut images = Vec::<BinaryPart>::new();
+    let mut attachments = Vec::<AttachmentMetaInput>::new();
+    for (idx, item) in media_refs.iter().enumerate() {
+        let fallback_name = match item.kind {
+            OnebotInboundMediaKind::Image => format!("onebot-image-{}.png", idx + 1),
+            OnebotInboundMediaKind::File => format!("onebot-file-{}", idx + 1),
+        };
+        let file_name = item
+            .file_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| onebot_guess_name_from_ref(&item.file_ref, &fallback_name));
+        let mut refs_to_try = Vec::<String>::new();
+        refs_to_try.push(item.file_ref.clone());
+        let mut resolved_raw: Option<Vec<u8>> = None;
+        let mut resolved_mime: Option<String> = None;
+        let mut last_err = String::new();
+        for file_ref in refs_to_try {
+            match onebot_read_media_bytes(&file_ref).await {
+                Ok((raw, mime)) => {
+                    resolved_raw = Some(raw);
+                    resolved_mime = mime;
+                    last_err.clear();
+                    break;
+                }
+                Err(err) => {
+                    last_err = err;
+                }
+            }
+        }
+        if resolved_raw.is_none() {
+            if let Some(file_id) = item.file_id.as_deref() {
+                match onebot_get_file_with_type(manager, channel_id, file_id, group_id, user_id).await {
+                    Ok((raw, mime)) => {
+                        resolved_raw = Some(raw);
+                        resolved_mime = mime;
+                        last_err.clear();
+                    }
+                    Err(err) => {
+                        last_err = err;
+                    }
+                }
+            }
+        }
+        let Some(raw) = resolved_raw else {
+            eprintln!(
+                "[远程IM][NapCat 事件] 媒体下载失败，skip，kind={:?}，ref={}，file_id={}，err={}",
+                item.kind,
+                item.file_ref,
+                item.file_id.clone().unwrap_or_default(),
+                last_err
+            );
+            continue;
+        };
+        let mime = mime_from_name_or_hint(
+            &file_name,
+            resolved_mime
+                .as_deref()
+                .or(item.mime_hint.as_deref()),
+        );
+
+        match item.kind {
+            OnebotInboundMediaKind::Image => {
+                images.push(BinaryPart {
+                    mime,
+                    bytes_base64: B64.encode(raw),
+                    saved_path: None,
+                });
+            }
+            OnebotInboundMediaKind::File => {
+                match persist_raw_attachment_to_downloads(state, &file_name, &mime, &raw) {
+                    Ok(saved) => {
+                        let relative_path = workspace_relative_path(state, &saved);
+                        attachments.push(AttachmentMetaInput {
+                            file_name,
+                            relative_path,
+                            mime,
+                        });
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "[远程IM][NapCat 事件] 附件落盘失败，skip，name={}，err={}",
+                            file_name, err
+                        );
+                    }
+                }
+            }
+        }
+    }
+    (images, attachments)
+}
+
 fn build_remote_im_enqueue_input(
     channel_id: &str,
     sender_name: String,
@@ -850,6 +1371,8 @@ fn build_remote_im_enqueue_input(
     remote_contact_name: Option<String>,
     platform_message_id: Option<String>,
     final_text: String,
+    images: Vec<BinaryPart>,
+    attachments: Vec<AttachmentMetaInput>,
 ) -> RemoteImEnqueueInput {
     RemoteImEnqueueInput {
         channel_id: channel_id.to_string(),
@@ -874,9 +1397,9 @@ fn build_remote_im_enqueue_input(
         payload: ChatInputPayload {
             text: Some(final_text),
             display_text: None,
-            images: None,
+            images: if images.is_empty() { None } else { Some(images) },
             audios: None,
-            attachments: None,
+            attachments: if attachments.is_empty() { None } else { Some(attachments) },
             model: None,
             extra_text_blocks: None,
             provider_meta: None,
@@ -908,10 +1431,14 @@ async fn parse_and_enqueue_onebot_event(
             .unwrap_or_else(|| "unknown".to_string())
     );
     let user_id = event.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
+    let group_id = event.get("group_id").and_then(|v| v.as_u64());
     let sender_name = resolve_sender_name(event);
     let message_field = event.get("message");
-    let (text, image_urls) = extract_message_content(event);
-    if text.trim().is_empty() && image_urls.is_empty() {
+    let (text, media_refs) = extract_message_content(event);
+    let (images, attachments) =
+        onebot_resolve_inbound_media(manager, channel_id, group_id, Some(user_id), state, &media_refs)
+            .await;
+    if text.trim().is_empty() && images.is_empty() && attachments.is_empty() {
         return Err(format!(
             "消息内容为空，跳过 (message_type={}, user_id={}, message_field_type={})",
             event
@@ -944,11 +1471,6 @@ async fn parse_and_enqueue_onebot_event(
         .map(|ch| ch.name.clone())
         .unwrap_or_else(|| "NapCat".to_string());
     let activate_assistant = channel_config.as_ref().map(|ch| ch.activate_assistant);
-    let final_text = if text.trim().is_empty() && !image_urls.is_empty() {
-        format!("[图片x{}]", image_urls.len())
-    } else {
-        text
-    };
     let input = build_remote_im_enqueue_input(
         channel_id,
         sender_name,
@@ -959,7 +1481,9 @@ async fn parse_and_enqueue_onebot_event(
         remote_contact_id,
         remote_contact_name,
         platform_message_id,
-        final_text,
+        text,
+        images,
+        attachments,
     );
     remote_im_enqueue_message_internal(input, state)
 }
