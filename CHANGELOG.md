@@ -2,10 +2,28 @@
 
 ## 未发布
 
+- 修复（remote-im-async-io）：远程 IM 附件读取改为异步并修正钉钉空发送返回
+  - `remote_im_send` 附件路径解析与图片读取改为异步文件 I/O，避免阻塞运行时线程
+  - OneBot 本地媒体读取改为 `tokio::fs::read`，保持原有错误映射语义
+  - 远程适配层内容项读取改为异步，并统一中文错误文案
+  - 钉钉 OpenAPI 发送链路不再在“全部内容被跳过”时返回 `ok`，改为明确返回跳过错误
+
+- 文档（plan-archive）：合并归档远程 IM 渠道与联系人相关计划文档
+  - 将 `plan/20260314_远程IM联系人管理计划.md`、`plan/20260314_远程IM联系人页面UI方案.md`、`plan/20260314_远程IM渠道接入计划.md`、`plan/远程IM渠道抽象设计.md`、`plan/远程IM渠道接口技术指南.md` 按最新实现统一整理
+  - 新增归档文档 `plan/done/20260320_远程IM渠道与联系人能力归档.md`
+  - 清理已过时的进行中计划，后续远程 IM 增量工作改为基于现状单独立项
+
 - 修复（mcp-windows）：增强 MCP stdio 在 Windows 下的命令执行兼容性
   - `cmd` 调用补充 `/D /S /C` 参数，并在执行前切换到 UTF-8 代码页，降低中文路径/输出乱码导致的连接失败概率
   - 连接失败时的 `stderr` 读取改为先拷贝再裁剪，规避临时借用导致的文本处理不稳定
   - 保存会话 API 配置后立即执行本地绑定归一化，避免界面配置与运行时绑定状态短暂不一致
+
+- 修复（remote-im-media）：完善远程 IM 三端媒体发送与 OneBot 入站文件解析
+  - `remote_im_send` 支持 `file_paths`，并统一为“图片按图片发送、其他按文件发送”；文本可为空但不能与文件同时为空
+  - 飞书发送链路补齐图片/文件上传后发送（`image_key` / `file_key`）
+  - 钉钉发送链路补齐媒体上传后发送（`sampleImageMsg` / `sampleFile`），有附件时自动走 OpenAPI 路径
+  - OneBot 入站消息不再仅用占位文本，图片/文件会真实入队到 `images/attachments`
+  - OneBot `file_id` 解析增加多动作兼容降级（`get_file(url/path/data)`、`get_group_file_url`、`get_private_file_url`），修复相对文件引用导致的入队失败
 
 - 调整（chat-ux）：主会话解耦人格并集中优化聊天底部交互体验
   - 主会话池不再按 `Conversation.agent_id` 绑定或过滤，主部门切换人格时直接影响 UI 展示与发言人格，不再影响主会话归属

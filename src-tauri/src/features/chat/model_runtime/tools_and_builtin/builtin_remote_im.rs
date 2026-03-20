@@ -19,12 +19,12 @@ impl Tool for BuiltinRemoteImSendTool {
                 "action": { "type": "string", "enum": ["list", "send"], "description": "动作。list=列出可用联系人；send=发送消息", "default": "send" },
                 "channel_id": { "type": "string", "description": "action=send 时必填；action=list 时可选（用于按渠道过滤）" },
                 "contact_id": { "type": "string", "description": "action=send 时必填；远程联系人 ID（contactId，即QQ号或群号）" },
-                "text": { "type": "string", "description": "action=send 时必填；要发送的文本内容" },
+                "text": { "type": "string", "description": "action=send 时可选；要发送的文本内容（当传入 file_paths 时可为空）" },
                 "status": { "type": "string", "enum": ["continue", "done"], "description": "发送后状态。continue=还需继续下一步；done=本轮已完成并停止后续工具链。大小写不敏感，内部统一转小写。", "default": "done" },
                 "file_paths": {
                   "type": "array",
                   "items": { "type": "string" },
-                  "description": "（预留）附件文件路径列表，当前版本暂不支持"
+                  "description": "可选附件路径列表：图片按图片发送，其他文件按附件发送"
                 }
               },
               "required": ["action"]
@@ -49,6 +49,64 @@ impl Tool for BuiltinRemoteImSendTool {
         }
         result
     }
+}
+
+async fn remote_im_resolve_file_path(state: &AppState, raw: &str) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("file_paths 包含空路径".to_string());
+    }
+    let direct = PathBuf::from(trimmed);
+    let candidate = if direct.is_absolute() {
+        direct
+    } else {
+        state.llm_workspace_path.join(direct)
+    };
+    let metadata = tokio::fs::metadata(candidate.clone())
+        .await
+        .map_err(|_| format!("附件路径不存在: {}", candidate.to_string_lossy()))?;
+    if !metadata.is_file() {
+        return Err(format!("附件路径不是文件: {}", candidate.to_string_lossy()));
+    }
+    Ok(candidate)
+}
+
+async fn remote_im_build_file_content_items(
+    state: &AppState,
+    file_paths: &[String],
+) -> Result<Vec<Value>, String> {
+    let mut out = Vec::<Value>::new();
+    for raw in file_paths {
+        let path = remote_im_resolve_file_path(state, raw).await?;
+        let file_name = path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or("attachment")
+            .to_string();
+        let mime = media_mime_from_path(path.as_path())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        if mime.starts_with("image/") {
+            let raw = tokio::fs::read(&path).await.map_err(|err| {
+                format!("读取图片失败: path={}, err={err}", path.to_string_lossy())
+            })?;
+            out.push(serde_json::json!({
+                "type": "image",
+                "mime": mime,
+                "name": file_name,
+                "bytesBase64": B64.encode(raw)
+            }));
+        } else {
+            out.push(serde_json::json!({
+                "type": "file",
+                "name": file_name,
+                "path": path.to_string_lossy().replace('\\', "/")
+            }));
+        }
+    }
+    Ok(out)
 }
 
 async fn builtin_remote_im_send(
@@ -129,9 +187,16 @@ async fn builtin_remote_im_send(
         .text
         .as_deref()
         .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| "action=send 时 text 不能为空".to_string())?
+        .unwrap_or("")
         .to_string();
+    let file_paths = args
+        .file_paths
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>();
 
     let config = state_read_config_cached(state)?;
     let channel = remote_im_channel_by_id(&config, &channel_id)
@@ -140,7 +205,11 @@ async fn builtin_remote_im_send(
     if !channel.enabled {
         return Err(format!("远程IM渠道未启用: {channel_id}"));
     }
-
+    if !file_paths.is_empty() && !channel.allow_send_files {
+        return Err(format!(
+            "远程IM渠道未开启文件发送: channel_id={channel_id}"
+        ));
+    }
     let data = state_read_app_data_cached(state)?;
     let contact = data
         .remote_im_contacts
@@ -156,16 +225,28 @@ async fn builtin_remote_im_send(
         ));
     }
 
+    let mut content = Vec::<Value>::new();
+    if !text.trim().is_empty() {
+        content.push(serde_json::json!({
+            "type": "text",
+            "text": text
+        }));
+    }
+    if !file_paths.is_empty() {
+        let mut file_items = remote_im_build_file_content_items(state, &file_paths).await?;
+        content.append(&mut file_items);
+    }
+    if content.is_empty() {
+        return Err("action=send 时 text 与 file_paths 不能同时为空".to_string());
+    }
+
     let payload = serde_json::json!({
         "channelId": contact.channel_id,
         "contactId": contact.id,
         "platform": channel.platform,
         "remoteContactType": contact.remote_contact_type,
         "remoteContactId": contact.remote_contact_id,
-        "content": [{
-            "type": "text",
-            "text": text
-        }],
+        "content": content,
     });
 
     let status = args.status.trim().to_ascii_lowercase();

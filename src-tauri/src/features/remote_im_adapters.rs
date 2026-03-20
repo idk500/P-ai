@@ -29,6 +29,133 @@ fn remote_im_payload_text(payload: &Value) -> String {
         .unwrap_or_default()
 }
 
+fn remote_im_onebot_message_segments(payload: &Value) -> Vec<Value> {
+    let mut out = Vec::<Value>::new();
+    let Some(items) = payload.get("content").and_then(Value::as_array) else {
+        return out;
+    };
+    for item in items {
+        let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+        match item_type {
+            "text" => {
+                let text = item.get("text").and_then(Value::as_str).unwrap_or("").trim();
+                if text.is_empty() {
+                    continue;
+                }
+                out.push(serde_json::json!({
+                    "type": "text",
+                    "data": {"text": text}
+                }));
+            }
+            "image" => {
+                let bytes_base64 = item
+                    .get("bytesBase64")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty());
+                let file_value = if let Some(b64) = bytes_base64 {
+                    format!("base64://{b64}")
+                } else {
+                    item.get("path")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_default()
+                };
+                if file_value.is_empty() {
+                    continue;
+                }
+                out.push(serde_json::json!({
+                    "type": "image",
+                    "data": {"file": file_value}
+                }));
+            }
+            "file" => {
+                let path = item
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("");
+                if path.is_empty() {
+                    continue;
+                }
+                out.push(serde_json::json!({
+                    "type": "file",
+                    "data": {"file": path}
+                }));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn remote_im_payload_content_items(payload: &Value) -> Vec<Value> {
+    payload
+        .get("content")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn remote_im_payload_has_non_text_items(payload: &Value) -> bool {
+    remote_im_payload_content_items(payload)
+        .iter()
+        .any(|item| item.get("type").and_then(Value::as_str).unwrap_or("") != "text")
+}
+
+fn remote_im_content_item_name(item: &Value, default_name: &str) -> String {
+    item.get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(default_name)
+        .to_string()
+}
+
+fn remote_im_content_item_mime(item: &Value, default_mime: &str) -> String {
+    item.get("mime")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(default_mime)
+        .to_string()
+}
+
+async fn remote_im_content_item_bytes(item: &Value) -> Result<Vec<u8>, String> {
+    if let Some(b64) = item
+        .get("bytesBase64")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        return B64
+            .decode(b64)
+            .map_err(|err| format!("解析内容项 bytesBase64 失败: {err}"));
+    }
+    let path = item
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| "内容项缺少 bytesBase64 或 path".to_string())?;
+    tokio::fs::read(path)
+        .await
+        .map_err(|err| format!("读取内容项文件失败: path={path}, err={err}"))
+}
+
+fn remote_im_file_ext_from_name(file_name: &str) -> String {
+    std::path::Path::new(file_name)
+        .extension()
+        .and_then(|v| v.to_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("bin")
+        .to_ascii_lowercase()
+}
+
 fn remote_im_credential_text(credentials: &Value, key: &str) -> String {
     credentials
         .get(key)
@@ -176,6 +303,125 @@ impl FeishuSdk {
         );
         Ok(token.to_string())
     }
+
+    async fn send_message(
+        &self,
+        client: &reqwest::Client,
+        token: &str,
+        receive_id_type: &str,
+        receive_id: &str,
+        msg_type: &str,
+        content_obj: Value,
+    ) -> Result<String, String> {
+        let response = client
+            .post(format!(
+                "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}"
+            ))
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .header(CONTENT_TYPE, "application/json")
+            .json(&serde_json::json!({
+                "receive_id": receive_id,
+                "msg_type": msg_type,
+                "content": content_obj.to_string()
+            }))
+            .send()
+            .await
+            .map_err(|err| format!("feishu send failed: {err}"))?;
+        let body = response
+            .json::<Value>()
+            .await
+            .map_err(|err| format!("parse feishu send response failed: {err}"))?;
+        if body.get("code").and_then(Value::as_i64).unwrap_or(-1) != 0 {
+            return Err(format!("feishu send rejected: {}", body));
+        }
+        Ok(body
+            .get("data")
+            .and_then(|v| v.get("message_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    async fn upload_image_key(
+        &self,
+        client: &reqwest::Client,
+        token: &str,
+        image_name: &str,
+        raw: Vec<u8>,
+    ) -> Result<String, String> {
+        let part = reqwest::multipart::Part::bytes(raw).file_name(image_name.to_string());
+        let form = reqwest::multipart::Form::new()
+            .text("image_type", "message")
+            .part("image", part);
+        let response = client
+            .post("https://open.feishu.cn/open-apis/im/v1/images")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|err| format!("feishu upload image failed: {err}"))?;
+        let body = response
+            .json::<Value>()
+            .await
+            .map_err(|err| format!("parse feishu upload image response failed: {err}"))?;
+        if body.get("code").and_then(Value::as_i64).unwrap_or(-1) != 0 {
+            return Err(format!("feishu upload image rejected: {}", body));
+        }
+        let image_key = body
+            .get("data")
+            .and_then(|v| v.get("image_key"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if image_key.is_empty() {
+            return Err(format!("feishu upload image missing image_key: {}", body));
+        }
+        Ok(image_key)
+    }
+
+    async fn upload_file_key(
+        &self,
+        client: &reqwest::Client,
+        token: &str,
+        file_name: &str,
+        mime: &str,
+        raw: Vec<u8>,
+    ) -> Result<String, String> {
+        let part = reqwest::multipart::Part::bytes(raw)
+            .file_name(file_name.to_string())
+            .mime_str(mime)
+            .map_err(|err| format!("build feishu file part mime failed: {err}"))?;
+        let form = reqwest::multipart::Form::new()
+            .text("file_type", "stream")
+            .text("file_name", file_name.to_string())
+            .part("file", part);
+        let response = client
+            .post("https://open.feishu.cn/open-apis/im/v1/files")
+            .header(AUTHORIZATION, format!("Bearer {token}"))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|err| format!("feishu upload file failed: {err}"))?;
+        let body = response
+            .json::<Value>()
+            .await
+            .map_err(|err| format!("parse feishu upload file response failed: {err}"))?;
+        if body.get("code").and_then(Value::as_i64).unwrap_or(-1) != 0 {
+            return Err(format!("feishu upload file rejected: {}", body));
+        }
+        let file_key = body
+            .get("data")
+            .and_then(|v| v.get("file_key"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if file_key.is_empty() {
+            return Err(format!("feishu upload file missing file_key: {}", body));
+        }
+        Ok(file_key)
+    }
 }
 
 impl RemoteImSdk for FeishuSdk {
@@ -200,20 +446,9 @@ impl RemoteImSdk for FeishuSdk {
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
             let started = std::time::Instant::now();
-            let text = remote_im_payload_text(payload);
-            if text.trim().is_empty() {
-                remote_im_log(
-                    "ERROR",
-                    "feishu.send_outbound",
-                    serde_json::json!({
-                        "channel_id": channel.id,
-                        "contact_id": contact.id,
-                        "remote_contact_id": contact.remote_contact_id,
-                        "status": "失败",
-                        "error": "feishu outbound text is empty"
-                    }),
-                );
-                return Err("feishu outbound text is empty".to_string());
+            let items = remote_im_payload_content_items(payload);
+            if items.is_empty() {
+                return Err("feishu outbound content is empty".to_string());
             }
             let token = self.tenant_access_token(channel).await?;
             let receive_id_type = remote_im_credential_text(&channel.credentials, "receiveIdType");
@@ -254,70 +489,65 @@ impl RemoteImSdk for FeishuSdk {
                     );
                     msg
                 })?;
-            let response = client
-                .post(format!(
-                    "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}"
-                ))
-                .header(AUTHORIZATION, format!("Bearer {token}"))
-                .header(CONTENT_TYPE, "application/json")
-                .json(&serde_json::json!({
-                    "receive_id": contact.remote_contact_id,
-                    "msg_type": "text",
-                    "content": serde_json::json!({"text": text}).to_string()
-                }))
-                .send()
-                .await
-                .map_err(|err| {
-                    let msg = format!("feishu send failed: {err}");
-                    remote_im_log(
-                        "ERROR",
-                        "feishu.send_outbound",
-                        serde_json::json!({
-                            "channel_id": channel.id,
-                            "contact_id": contact.id,
-                            "status": "失败",
-                            "error": msg
-                        }),
-                    );
-                    msg
-                })?;
-            let body = response
-                .json::<Value>()
-                .await
-                .map_err(|err| {
-                    let msg = format!("parse feishu send response failed: {err}");
-                    remote_im_log(
-                        "ERROR",
-                        "feishu.send_outbound",
-                        serde_json::json!({
-                            "channel_id": channel.id,
-                            "contact_id": contact.id,
-                            "status": "失败",
-                            "error": msg
-                        }),
-                    );
-                    msg
-                })?;
-            if body.get("code").and_then(Value::as_i64).unwrap_or(-1) != 0 {
-                let err = format!("feishu send rejected: {}", body);
-                remote_im_log(
-                    "ERROR",
-                    "feishu.send_outbound",
-                    serde_json::json!({
-                        "channel_id": channel.id,
-                        "contact_id": contact.id,
-                        "status": "失败",
-                        "error": err
-                    }),
-                );
-                return Err(err);
+            let mut last_message_id = String::new();
+            for item in &items {
+                let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+                let message_id = match item_type {
+                    "text" => {
+                        let text = item.get("text").and_then(Value::as_str).unwrap_or("").trim();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        self.send_message(
+                            &client,
+                            &token,
+                            &receive_id_type,
+                            &contact.remote_contact_id,
+                            "text",
+                            serde_json::json!({ "text": text }),
+                        )
+                        .await?
+                    }
+                    "image" => {
+                        let raw = remote_im_content_item_bytes(item).await?;
+                        let image_name = remote_im_content_item_name(item, "image.png");
+                        let image_key = self.upload_image_key(&client, &token, &image_name, raw).await?;
+                        self.send_message(
+                            &client,
+                            &token,
+                            &receive_id_type,
+                            &contact.remote_contact_id,
+                            "image",
+                            serde_json::json!({ "image_key": image_key }),
+                        )
+                        .await?
+                    }
+                    "file" => {
+                        let raw = remote_im_content_item_bytes(item).await?;
+                        let file_name = remote_im_content_item_name(item, "attachment.bin");
+                        let file_mime = remote_im_content_item_mime(item, "application/octet-stream");
+                        let file_key = self
+                            .upload_file_key(&client, &token, &file_name, &file_mime, raw)
+                            .await?;
+                        self.send_message(
+                            &client,
+                            &token,
+                            &receive_id_type,
+                            &contact.remote_contact_id,
+                            "file",
+                            serde_json::json!({ "file_key": file_key }),
+                        )
+                        .await?
+                    }
+                    _ => continue,
+                };
+                if !message_id.trim().is_empty() {
+                    last_message_id = message_id;
+                }
             }
-            let message_id = body
-                .get("data")
-                .and_then(|v| v.get("message_id"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+            if last_message_id.trim().is_empty() {
+                return Err("feishu outbound content is empty".to_string());
+            }
             remote_im_log(
                 "INFO",
                 "feishu.send_outbound",
@@ -327,11 +557,11 @@ impl RemoteImSdk for FeishuSdk {
                     "remote_contact_id": contact.remote_contact_id,
                     "receive_id_type": receive_id_type,
                     "status": "完成",
-                    "message_id": message_id,
+                    "message_id": last_message_id,
                     "duration_ms": started.elapsed().as_millis()
                 }),
             );
-            Ok(message_id)
+            Ok(last_message_id)
         })
     }
 }
@@ -533,14 +763,15 @@ impl DingtalkSdk {
         is_group: bool,
         contact: &RemoteImContact,
         robot_code: &str,
-        text: &str,
+        msg_key: &str,
+        msg_param: Value,
     ) -> (String, Value) {
         if is_group {
             (
                 "https://api.dingtalk.com/v1.0/robot/groupMessages/send".to_string(),
                 serde_json::json!({
-                    "msgKey": "sampleText",
-                    "msgParam": serde_json::json!({"content": text}).to_string(),
+                    "msgKey": msg_key,
+                    "msgParam": msg_param.to_string(),
                     "openConversationId": contact.remote_contact_id,
                     "robotCode": robot_code
                 }),
@@ -551,11 +782,52 @@ impl DingtalkSdk {
                 serde_json::json!({
                     "robotCode": robot_code,
                     "userIds": [contact.remote_contact_id],
-                    "msgKey": "sampleText",
-                    "msgParam": serde_json::json!({"content": text}).to_string()
+                    "msgKey": msg_key,
+                    "msgParam": msg_param.to_string()
                 }),
             )
         }
+    }
+
+    async fn upload_media_id(
+        &self,
+        client: &reqwest::Client,
+        token: &str,
+        media_type: &str,
+        file_name: &str,
+        mime: &str,
+        raw: Vec<u8>,
+    ) -> Result<String, String> {
+        let part = reqwest::multipart::Part::bytes(raw)
+            .file_name(file_name.to_string())
+            .mime_str(mime)
+            .map_err(|err| format!("build dingtalk media part mime failed: {err}"))?;
+        let form = reqwest::multipart::Form::new().part("media", part);
+        let response = client
+            .post(format!(
+                "https://oapi.dingtalk.com/media/upload?access_token={token}&type={media_type}"
+            ))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|err| format!("dingtalk media upload failed: {err}"))?;
+        let body = response
+            .json::<Value>()
+            .await
+            .map_err(|err| format!("parse dingtalk media upload response failed: {err}"))?;
+        if body.get("errcode").and_then(Value::as_i64).unwrap_or(0) != 0 {
+            return Err(format!("dingtalk media upload rejected: {}", body));
+        }
+        let media_id = body
+            .get("media_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if media_id.is_empty() {
+            return Err(format!("dingtalk media upload missing media_id: {}", body));
+        }
+        Ok(media_id)
     }
 
     // ========== http send/parse ==========
@@ -714,35 +986,19 @@ impl RemoteImSdk for DingtalkSdk {
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
             let started = std::time::Instant::now();
-            let content_count = payload
-                .get("content")
-                .and_then(Value::as_array)
-                .map(|items| items.len())
-                .unwrap_or(0);
+            let items = remote_im_payload_content_items(payload);
+            if items.is_empty() {
+                return Err("dingtalk outbound content is empty".to_string());
+            }
+            let content_count = items.len();
             let is_group = contact.remote_contact_type.trim().eq_ignore_ascii_case("group");
-            // ========== input validation ==========
-            let text = match self.validate_and_get_text(payload) {
-                Ok(text) => text,
-                Err(err) => {
-                    self.log_outcome(
-                        "ERROR",
-                        channel,
-                        contact,
-                        is_group,
-                        content_count,
-                        0,
-                        started,
-                        "失败",
-                        None,
-                        Some(&err),
-                        None,
-                    );
-                    return Err(err);
-                }
-            };
-            let has_session_webhook = self.session_webhook_from_contact(contact).is_some();
+            let text_preview = remote_im_payload_text(payload);
+            let has_non_text = remote_im_payload_has_non_text_items(payload);
+            let has_session_webhook = self.session_webhook_from_contact(contact).is_some() && !has_non_text;
             let has_robot_code = self.get_robot_code(channel).is_some();
-            let default_mode = if has_session_webhook {
+            let default_mode = if has_non_text {
+                "openapi_media"
+            } else if has_session_webhook {
                 "stream_session_webhook"
             } else if has_robot_code {
                 "openapi_robot"
@@ -755,7 +1011,7 @@ impl RemoteImSdk for DingtalkSdk {
                 contact,
                 is_group,
                 content_count,
-                text.len(),
+                text_preview.len(),
                 started,
                 "开始",
                 None,
@@ -776,7 +1032,7 @@ impl RemoteImSdk for DingtalkSdk {
                         contact,
                         is_group,
                         content_count,
-                        text.len(),
+                        text_preview.len(),
                         started,
                         "失败",
                         None,
@@ -789,34 +1045,17 @@ impl RemoteImSdk for DingtalkSdk {
 
             // ========== stream session webhook ==========
             if let Some(webhook) = self.session_webhook_from_contact(contact) {
-                if self.session_webhook_expired(contact) {
-                    let err =
-                        "dingtalk sessionWebhook 已过期，请等待联系人发送新消息后再回复".to_string();
-                    self.log_outcome(
-                        "ERROR",
-                        channel,
-                        contact,
-                        is_group,
-                        content_count,
-                        text.len(),
-                        started,
-                        "失败",
-                        None,
-                        Some(&err),
-                        Some("stream_session_webhook"),
-                    );
-                    return Err(err);
-                }
-                let parsed = match self.send_via_session_webhook(&client, &webhook, &text).await {
-                    Ok(parsed) => parsed,
-                    Err(err) => {
+                if !has_non_text {
+                    if self.session_webhook_expired(contact) {
+                        let err =
+                            "dingtalk sessionWebhook 已过期，请等待联系人发送新消息后再回复".to_string();
                         self.log_outcome(
                             "ERROR",
                             channel,
                             contact,
                             is_group,
                             content_count,
-                            text.len(),
+                            text_preview.len(),
                             started,
                             "失败",
                             None,
@@ -825,26 +1064,64 @@ impl RemoteImSdk for DingtalkSdk {
                         );
                         return Err(err);
                     }
-                };
-                let message_id = parsed
-                    .get("processQueryKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                self.log_outcome(
-                    "INFO",
-                    channel,
-                    contact,
-                    is_group,
-                    content_count,
-                    text.len(),
-                    started,
-                    "完成",
-                    Some(&message_id),
-                    None,
-                    Some("stream_session_webhook"),
-                );
-                return Ok(message_id);
+                    let text = match self.validate_and_get_text(payload) {
+                        Ok(text) => text,
+                        Err(err) => {
+                            self.log_outcome(
+                                "ERROR",
+                                channel,
+                                contact,
+                                is_group,
+                                content_count,
+                                0,
+                                started,
+                                "失败",
+                                None,
+                                Some(&err),
+                                Some("stream_session_webhook"),
+                            );
+                            return Err(err);
+                        }
+                    };
+                    let parsed = match self.send_via_session_webhook(&client, &webhook, &text).await {
+                        Ok(parsed) => parsed,
+                        Err(err) => {
+                            self.log_outcome(
+                                "ERROR",
+                                channel,
+                                contact,
+                                is_group,
+                                content_count,
+                                text.len(),
+                                started,
+                                "失败",
+                                None,
+                                Some(&err),
+                                Some("stream_session_webhook"),
+                            );
+                            return Err(err);
+                        }
+                    };
+                    let message_id = parsed
+                        .get("processQueryKey")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    self.log_outcome(
+                        "INFO",
+                        channel,
+                        contact,
+                        is_group,
+                        content_count,
+                        text.len(),
+                        started,
+                        "完成",
+                        Some(&message_id),
+                        None,
+                        Some("stream_session_webhook"),
+                    );
+                    return Ok(message_id);
+                }
             }
 
             // ========== openapi fallback ==========
@@ -858,7 +1135,7 @@ impl RemoteImSdk for DingtalkSdk {
                     contact,
                     is_group,
                     content_count,
-                    text.len(),
+                    text_preview.len(),
                     started,
                     "失败",
                     None,
@@ -874,7 +1151,7 @@ impl RemoteImSdk for DingtalkSdk {
                     contact,
                     is_group,
                     content_count,
-                    text.len(),
+                    text_preview.len(),
                     started,
                     "失败",
                     None,
@@ -892,7 +1169,7 @@ impl RemoteImSdk for DingtalkSdk {
                         contact,
                         is_group,
                         content_count,
-                        text.len(),
+                        text_preview.len(),
                         started,
                         "失败",
                         None,
@@ -902,27 +1179,90 @@ impl RemoteImSdk for DingtalkSdk {
                     return Err(err);
                 }
             };
-            let (url, body) = self.build_request_body(is_group, contact, &robot_code, &text);
-            let parsed = match self.send_and_parse(&client, url, &token, &body).await {
-                Ok(parsed) => parsed,
-                Err(err) => {
-                    self.log_outcome(
-                        "ERROR",
-                        channel,
-                        contact,
-                        is_group,
-                        content_count,
-                        text.len(),
-                        started,
-                        "失败",
-                        None,
-                        Some(&err),
-                        Some("openapi_robot"),
-                    );
-                    return Err(err);
+            let mut process_query_key = String::new();
+            for item in &items {
+                let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+                let (msg_key, msg_param) = match item_type {
+                    "text" => {
+                        let text = item.get("text").and_then(Value::as_str).unwrap_or("").trim();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        ("sampleText".to_string(), serde_json::json!({ "content": text }))
+                    }
+                    "image" => {
+                        let image_name = remote_im_content_item_name(item, "image.png");
+                        let image_mime = remote_im_content_item_mime(item, "image/png");
+                        let image_raw = remote_im_content_item_bytes(item).await?;
+                        let media_id = self
+                            .upload_media_id(&client, &token, "image", &image_name, &image_mime, image_raw)
+                            .await?;
+                        (
+                            "sampleImageMsg".to_string(),
+                            serde_json::json!({ "photoURL": media_id }),
+                        )
+                    }
+                    "file" => {
+                        let file_name = remote_im_content_item_name(item, "attachment.bin");
+                        let file_mime = remote_im_content_item_mime(item, "application/octet-stream");
+                        let file_raw = remote_im_content_item_bytes(item).await?;
+                        let media_id = self
+                            .upload_media_id(&client, &token, "file", &file_name, &file_mime, file_raw)
+                            .await?;
+                        (
+                            "sampleFile".to_string(),
+                            serde_json::json!({
+                                "mediaId": media_id,
+                                "fileName": file_name,
+                                "fileType": remote_im_file_ext_from_name(&file_name),
+                            }),
+                        )
+                    }
+                    _ => continue,
+                };
+                let (url, body) =
+                    self.build_request_body(is_group, contact, &robot_code, &msg_key, msg_param);
+                let parsed = match self.send_and_parse(&client, url, &token, &body).await {
+                    Ok(parsed) => parsed,
+                    Err(err) => {
+                        self.log_outcome(
+                            "ERROR",
+                            channel,
+                            contact,
+                            is_group,
+                            content_count,
+                            text_preview.len(),
+                            started,
+                            "失败",
+                            None,
+                            Some(&err),
+                            Some("openapi_robot"),
+                        );
+                        return Err(err);
+                    }
+                };
+                let current = self.process_query_key_from_response(&parsed);
+                if !current.trim().is_empty() {
+                    process_query_key = current;
                 }
-            };
-            let process_query_key = self.process_query_key_from_response(&parsed);
+            }
+            if process_query_key.trim().is_empty() {
+                let err = "钉钉发送被跳过：未生成任何可发送消息".to_string();
+                self.log_outcome(
+                    "WARN",
+                    channel,
+                    contact,
+                    is_group,
+                    content_count,
+                    text_preview.len(),
+                    started,
+                    "跳过",
+                    None,
+                    Some(&err),
+                    Some("openapi_robot"),
+                );
+                return Err(err);
+            }
 
             // ========== final logging ==========
             self.log_outcome(
@@ -931,7 +1271,7 @@ impl RemoteImSdk for DingtalkSdk {
                 contact,
                 is_group,
                 content_count,
-                text.len(),
+                text_preview.len(),
                 started,
                 "完成",
                 Some(&process_query_key),
@@ -969,9 +1309,9 @@ impl RemoteImSdk for OnebotV11Sdk {
         payload: &'a Value,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
-            let text = remote_im_payload_text(payload);
-            if text.trim().is_empty() {
-                return Err("onebot v11 outbound text is empty".to_string());
+            let segments = remote_im_onebot_message_segments(payload);
+            if segments.is_empty() {
+                return Err("onebot v11 outbound content is empty".to_string());
             }
 
             let manager = napcat_ws_manager();
@@ -988,12 +1328,12 @@ impl RemoteImSdk for OnebotV11Sdk {
             let params = if action == "send_group_msg" {
                 serde_json::json!({
                     "group_id": contact.remote_contact_id,
-                    "message": text
+                    "message": segments
                 })
             } else {
                 serde_json::json!({
                     "user_id": contact.remote_contact_id,
-                    "message": text
+                    "message": segments
                 })
             };
 
@@ -1103,6 +1443,22 @@ mod remote_im_adapter_tests {
             ]
         });
         assert_eq!(remote_im_payload_text(&payload), "a\nb".to_string());
+    }
+
+    #[test]
+    fn onebot_segments_should_keep_text_image_file() {
+        let payload = serde_json::json!({
+            "content": [
+                {"type":"text","text":"hello"},
+                {"type":"image","bytesBase64":"YWJj"},
+                {"type":"file","path":"C:/tmp/readme.txt"}
+            ]
+        });
+        let segments = remote_im_onebot_message_segments(&payload);
+        assert_eq!(segments.len(), 3);
+        assert_eq!(segments[0].get("type").and_then(Value::as_str), Some("text"));
+        assert_eq!(segments[1].get("type").and_then(Value::as_str), Some("image"));
+        assert_eq!(segments[2].get("type").and_then(Value::as_str), Some("file"));
     }
 
     #[test]
