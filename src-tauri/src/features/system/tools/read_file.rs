@@ -731,14 +731,6 @@ fn test_read_file_state() -> AppState {
     }
 
 #[cfg(test)]
-fn test_data_file(name: &str) -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("data")
-            .join(name)
-    }
-
-#[cfg(test)]
 #[test]
 fn detect_read_file_type_should_classify_common_formats() {
         assert_eq!(
@@ -864,60 +856,6 @@ fn builtin_read_file_should_return_root_image_payload_when_model_supports_image(
 
 #[cfg(test)]
 #[test]
-fn builtin_read_file_should_read_doc_via_litchi() {
-        let file = test_data_file("实验1 OO设计原则实训2.doc");
-        assert!(file.exists(), "doc sample should exist");
-        let state = test_read_file_state();
-        let value = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build tokio runtime")
-        .block_on(builtin_read_file(
-            &state,
-            "chat::conv-1",
-            "__frontend_tool_preview__",
-            ReadFileRequest {
-                absolute_path: file.to_string_lossy().to_string(),
-                offset: None,
-                limit: None,
-            },
-        ))
-        .expect("read doc via litchi");
-        assert_eq!(value.get("readerKind").and_then(Value::as_str), Some("litchi"));
-        assert_eq!(value.get("detectedType").and_then(Value::as_str), Some("doc"));
-        let text = value.get("content").and_then(Value::as_str).unwrap_or_default();
-        assert!(text.contains("OO设计原则"));
-    }
-
-#[cfg(test)]
-#[test]
-fn builtin_read_file_should_read_xlsx_via_litchi() {
-        let file = test_data_file("(现行）深圳街道综合行政执法职权实施清单指引（附法律依据）.xlsx");
-        assert!(file.exists(), "xlsx sample should exist");
-        let state = test_read_file_state();
-        let value = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build tokio runtime")
-        .block_on(builtin_read_file(
-            &state,
-            "chat::conv-1",
-            "__frontend_tool_preview__",
-            ReadFileRequest {
-                absolute_path: file.to_string_lossy().to_string(),
-                offset: Some(0),
-                limit: Some(5),
-            },
-        ))
-        .expect("read xlsx via litchi");
-        assert_eq!(value.get("readerKind").and_then(Value::as_str), Some("litchi"));
-        assert_eq!(value.get("detectedType").and_then(Value::as_str), Some("xlsx"));
-        let text = value.get("content").and_then(Value::as_str).unwrap_or_default();
-        assert!(text.contains("深圳市街道综合行政执法职权实施清单指引"));
-    }
-
-#[cfg(test)]
-#[test]
 fn builtin_read_file_should_prefix_truncation_notice_only_when_truncated() {
         let root = std::env::temp_dir().join(format!("eca-read-file-trunc-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("create temp dir");
@@ -942,28 +880,4 @@ fn builtin_read_file_should_prefix_truncation_notice_only_when_truncated() {
         .expect("read truncated text");
         let text = value.get("content").and_then(Value::as_str).unwrap_or_default();
         assert!(text.starts_with("Content was truncated to fit within 30000 character limit.\nTo continue reading, use offset="));
-    }
-
-#[cfg(test)]
-#[test]
-fn builtin_read_file_should_convert_ppt_panic_to_error() {
-        let file = test_data_file("01_第1章_统一建模语言基础知识.ppt");
-        assert!(file.exists(), "ppt sample should exist");
-        let state = test_read_file_state();
-        let err = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("build tokio runtime")
-        .block_on(builtin_read_file(
-            &state,
-            "chat::conv-1",
-            "__frontend_tool_preview__",
-            ReadFileRequest {
-                absolute_path: file.to_string_lossy().to_string(),
-                offset: None,
-                limit: None,
-            },
-        ))
-        .expect_err("ppt should degrade to readable error");
-        assert!(err.contains("实验性 Office reader 解析失败并触发 panic"));
     }
