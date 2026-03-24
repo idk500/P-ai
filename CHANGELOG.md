@@ -2,6 +2,10 @@
 
 ## 未发布
 
+- 测试（read-file-test-cleanup）：移除依赖外部样本文件的 `read_file` 测试
+  - 删除 `read_file` 中依赖仓库外部 `data/` Office / PPT 样本文件的测试用例
+  - 保留其余无需外部样本的单元测试，避免测试与本机或其他项目目录耦合
+
 - 调整（apply-patch-absolute-path）：`apply_patch` 统一为绝对路径输入
   - `apply_patch` 路径解析改为只接受绝对路径，并继续校验路径必须落在当前工作区内
   - 同步更新 `apply_patch` 撤回链路与解析测试，统一使用绝对路径补丁输入
