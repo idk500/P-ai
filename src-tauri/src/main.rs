@@ -231,6 +231,18 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let chat_is_visible = app
+                .get_webview_window("chat")
+                .and_then(|window| window.is_visible().ok())
+                .unwrap_or(false);
+            let target = if chat_is_visible { "chat" } else { "main" };
+            if let Err(err) = show_window(app, target) {
+                eprintln!("[单实例] 激活已有实例失败: target={}, error={}", target, err);
+            } else {
+                eprintln!("[单实例] 已拦截重复启动并激活现有实例: target={}", target);
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
