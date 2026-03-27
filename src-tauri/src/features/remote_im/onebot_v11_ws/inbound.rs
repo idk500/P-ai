@@ -1,7 +1,7 @@
 fn build_remote_im_enqueue_input(
     channel_id: &str,
     sender_name: String,
-    user_id: u64,
+    sender_id: String,
     im_name: String,
     activate_assistant: Option<bool>,
     remote_contact_type: String,
@@ -19,7 +19,7 @@ fn build_remote_im_enqueue_input(
         remote_contact_type,
         remote_contact_id,
         remote_contact_name,
-        sender_id: user_id.to_string(),
+        sender_id,
         sender_name,
         sender_avatar_url: None,
         platform_message_id,
@@ -68,8 +68,9 @@ async fn parse_and_enqueue_onebot_event(
             .map(|v| v.to_string())
             .unwrap_or_else(|| "unknown".to_string())
     );
-    let user_id = event.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0);
-    let group_id = event.get("group_id").and_then(|v| v.as_u64());
+    let user_id_for_media = onebot_read_u64_like(event, "user_id").unwrap_or(0);
+    let group_id = onebot_read_u64_like(event, "group_id");
+    let sender_id = onebot_read_id_as_string(event, "user_id").unwrap_or_else(|| user_id_for_media.to_string());
     let sender_name = resolve_sender_name(event);
     let message_field = event.get("message");
     let (mut text, mut media_refs, embedded_refs) = extract_message_content(event);
@@ -86,7 +87,7 @@ async fn parse_and_enqueue_onebot_event(
         media_refs.extend(nested_media_refs);
     }
     let (images, attachments) =
-        onebot_resolve_inbound_media(manager, channel_id, group_id, Some(user_id), state, &media_refs)
+        onebot_resolve_inbound_media(manager, channel_id, group_id, Some(user_id_for_media), state, &media_refs)
             .await;
     if text.trim().is_empty() && images.is_empty() && attachments.is_empty() {
         return Err(format!(
@@ -95,7 +96,7 @@ async fn parse_and_enqueue_onebot_event(
                 .get("message_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("private"),
-            user_id,
+            sender_id,
             message_field_kind(message_field)
         ));
     }
@@ -105,16 +106,7 @@ async fn parse_and_enqueue_onebot_event(
     if remote_contact_type != "group" {
         remote_contact_name = Some(sender_name.clone());
     }
-    let platform_message_id = event
-        .get("message_id")
-        .and_then(|v| v.as_u64())
-        .map(|id| id.to_string())
-        .or_else(|| {
-            event
-                .get("message_id")
-                .and_then(|v| v.as_i64())
-                .map(|id| id.to_string())
-        });
+    let platform_message_id = onebot_read_id_as_string(event, "message_id");
     let channel_config = read_channel_config(state, channel_id)?;
     let im_name = channel_config
         .as_ref()
@@ -124,7 +116,7 @@ async fn parse_and_enqueue_onebot_event(
     let input = build_remote_im_enqueue_input(
         channel_id,
         sender_name,
-        user_id,
+        sender_id,
         im_name,
         activate_assistant,
         remote_contact_type,

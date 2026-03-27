@@ -28,15 +28,42 @@ struct OnebotEmbeddedRef {
 }
 
 fn onebot_embedded_ref_id(data: Option<&Value>) -> Option<String> {
-    data.and_then(|d| d.get("id"))
-        .and_then(|v| {
-            v.as_str()
-                .map(str::to_string)
-                .or_else(|| v.as_u64().map(|n| n.to_string()))
-                .or_else(|| v.as_i64().map(|n| n.to_string()))
-        })
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    data.and_then(|d| onebot_read_id_as_string(d, "id"))
+}
+
+fn onebot_scalar_to_trimmed_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn onebot_read_id_as_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(onebot_scalar_to_trimmed_string)
+}
+
+fn onebot_read_u64_like(value: &Value, key: &str) -> Option<u64> {
+    let raw = value.get(key)?;
+    if let Some(id) = raw.as_u64() {
+        return Some(id);
+    }
+    if let Some(id) = raw.as_i64() {
+        return u64::try_from(id).ok();
+    }
+    raw.as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .and_then(|text| text.parse::<u64>().ok())
 }
 
 /// 从 OneBot v11 message 数组格式中提取文本、媒体引用和嵌入引用
@@ -437,10 +464,7 @@ fn onebot_read_sender_name(sender: &Value, prefer_card: bool) -> Option<String> 
         .get(primary_key)
         .or_else(|| sender.get(secondary_key))
         .or_else(|| sender.get("user_id"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+        .and_then(onebot_scalar_to_trimmed_string)
 }
 
 fn onebot_resolve_forward_node_sender_name(node: &Value) -> String {
@@ -555,15 +579,17 @@ async fn resolve_contact_info(
         .get("message_type")
         .and_then(|v| v.as_str())
         .unwrap_or("private");
-    let user_id = event
-        .get("user_id")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    let group_id = event.get("group_id").and_then(|v| v.as_u64());
+    let user_id = onebot_read_id_as_string(event, "user_id").unwrap_or_default();
+    let group_id = onebot_read_id_as_string(event, "group_id");
     if message_type == "group" {
-        let gid = group_id.ok_or("群消息缺少 group_id")?;
+        let gid = group_id.clone().ok_or("群消息缺少 group_id")?;
         let group_name = match manager
-            .call_api(channel_id, "get_group_info", serde_json::json!({"group_id": gid}), 5000)
+            .call_api(
+                channel_id,
+                "get_group_info",
+                serde_json::json!({ "group_id": gid }),
+                5000,
+            )
             .await
         {
             Ok(info) => info
@@ -572,9 +598,12 @@ async fn resolve_contact_info(
                 .map(String::from),
             Err(_) => None,
         };
-        Ok(("group".to_string(), gid.to_string(), group_name))
+        Ok(("group".to_string(), gid, group_name))
     } else {
-        Ok(("private".to_string(), user_id.to_string(), None))
+        if user_id.is_empty() {
+            return Err("私聊消息缺少 user_id".to_string());
+        }
+        Ok(("private".to_string(), user_id, None))
     }
 }
 
@@ -590,7 +619,8 @@ fn read_channel_config(
 fn resolve_sender_name(event: &Value) -> String {
     event
         .get("sender")
-        .and_then(|sender| onebot_read_sender_name(sender, true))
+        .and_then(|sender| onebot_read_sender_name(sender, false))
+        .or_else(|| onebot_read_id_as_string(event, "user_id"))
         .unwrap_or_else(|| "Unknown".to_string())
 }
 
