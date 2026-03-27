@@ -221,6 +221,36 @@
     }
 
     #[test]
+    fn build_prompt_user_meta_text_should_skip_compaction_message_metadata() {
+        let now = now_iso();
+        let mut message = test_text_message(
+            "user",
+            "[上下文整理]\n触发原因：manual\n整理摘要：\n用户刚刚确认继续推进。",
+            &now,
+        );
+        message.provider_meta = Some(serde_json::json!({
+            "origin": {
+                "kind": "remote_im",
+                "channel_id": "remote-im-1",
+                "contact_type": "private",
+                "contact_id": "contact-42",
+                "contact_name": "测试联系人",
+                "sender_name": "张三"
+            }
+        }));
+
+        let meta = build_prompt_user_meta_text(
+            &message,
+            &[default_agent(), default_user_persona()],
+            "用户",
+            "zh-CN",
+            true,
+        );
+
+        assert!(meta.is_none());
+    }
+
+    #[test]
     fn prepared_prompt_to_messages_json_should_keep_structured_tool_history_messages() {
         let prepared = PreparedPrompt {
             preamble: "sys".to_string(),
@@ -289,6 +319,49 @@
                     })
                     .unwrap_or(false)
         }));
+    }
+
+    #[test]
+    fn build_prompt_should_not_duplicate_compaction_message_into_latest_user_text() {
+        let now = now_iso();
+        let agent = default_agent();
+        let messages = vec![
+            test_text_message("user", "第一轮用户原始消息", &now),
+            ChatMessage {
+                id: Uuid::new_v4().to_string(),
+                role: "user".to_string(),
+                created_at: now.clone(),
+                speaker_agent_id: None,
+                parts: vec![MessagePart::Text {
+                    text: "[上下文整理]\n触发原因：force_context_usage_82_after_reply\n整理摘要：\n保留关键上下文。".to_string(),
+                }],
+                extra_text_blocks: Vec::new(),
+                provider_meta: None,
+                tool_call: None,
+                mcp_call: None,
+            },
+        ];
+        let conv = test_active_conversation_with_messages(messages, Some(now));
+
+        let prepared = build_prompt(
+            &conv,
+            &agent,
+            &[agent.clone(), default_user_persona()],
+            &[],
+            "用户",
+            "我是...",
+            DEFAULT_RESPONSE_STYLE_ID,
+            "zh-CN",
+            None,
+            None,
+            None,
+            false,
+        );
+
+        assert_eq!(prepared.history_messages.len(), 1);
+        assert!(prepared.history_messages[0].text.contains("[上下文整理]"));
+        assert!(prepared.latest_user_text.trim().is_empty());
+        assert!(prepared.latest_user_meta_text.trim().is_empty());
     }
 
     #[test]

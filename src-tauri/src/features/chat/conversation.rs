@@ -702,6 +702,9 @@ fn build_prompt_user_meta_text(
     ui_language: &str,
     include_remote_identity: bool,
 ) -> Option<String> {
+    if is_context_compaction_message(message, "user") {
+        return None;
+    }
     let speaker_block = build_prompt_speaker_block(message, agents, user_name, ui_language);
     let time_text = format_message_time_rfc3339_local_to_minute(&message.created_at);
     let has_speaker = !speaker_block.trim().is_empty();
@@ -1445,12 +1448,6 @@ fn build_prompt_with_mode(
             }
             Some(idx)
         });
-    let compaction_texts = compression_message_indexes
-        .iter()
-        .filter_map(|idx| enriched_conversation.messages.get(*idx))
-        .map(context_compaction_message_text)
-        .filter(|text| !text.trim().is_empty())
-        .collect::<Vec<_>>();
     let mut history_messages = Vec::<PreparedHistoryMessage>::new();
     for (idx, message) in enriched_conversation.messages.iter().enumerate() {
         let Some(role) = prompt_role_for_message(message, &agent.id) else {
@@ -1781,8 +1778,6 @@ fn build_prompt_with_mode(
         {
             latest_user_text = " ".to_string();
         }
-    } else if !compaction_texts.is_empty() {
-        latest_user_text = compaction_texts.join("\n\n");
     }
 
     PreparedPrompt {
