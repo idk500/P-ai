@@ -17,7 +17,15 @@
     >
       <!-- 历史对话 -->
       <template v-for="(block, blockIndex) in messageBlocks" :key="block.id">
-        <div :class="['chat group/user-turn mt-3', isOwnMessage(block) ? 'chat-end' : 'chat-start', shouldAnimateMessage(block, blockIndex) ? 'ecall-message-enter-up' : '']">
+        <div
+          v-if="isCompactionBlock(block)"
+          :class="['mt-4 flex items-center gap-3 text-[11px] text-base-content/45', shouldAnimateMessage(block, blockIndex) ? 'ecall-message-enter-up' : '']"
+        >
+          <div class="h-px flex-1 bg-base-300/80"></div>
+          <span class="shrink-0 tracking-[0.2em]">上文已压缩</span>
+          <div class="h-px flex-1 bg-base-300/80"></div>
+        </div>
+        <div v-else :class="['chat group/user-turn mt-3', isOwnMessage(block) ? 'chat-end' : 'chat-start', shouldAnimateMessage(block, blockIndex) ? 'ecall-message-enter-up' : '']">
           <div class="chat-image self-start ecall-chat-avatar-col">
             <div class="flex w-7 flex-col items-center gap-2">
               <div class="avatar">
@@ -399,7 +407,7 @@
           @keydown="handleChatInputKeydown"
         ></textarea>
         <div class="flex items-center justify-between gap-2">
-          <div class="flex-1 min-w-0 rounded-box border border-base-300 bg-gradient-to-r from-base-300 via-base-300 to-base-200 px-2 py-1.5 text-[11px] overflow-hidden">
+          <div class="flex-1 min-w-0 rounded-box border border-base-300 bg-linear-to-r from-base-300 via-base-300 to-base-200 px-2 py-1.5 text-[11px] overflow-hidden">
             <div class="flex items-center gap-1 min-w-0 overflow-x-auto conversation-tray-scroll-hidden">
               <template v-if="mainConversationItem">
                 <button
@@ -847,6 +855,13 @@ function isOwnMessage(block: ChatMessageBlock): boolean {
   if (block.remoteImOrigin) return false;
   const id = String(block.speakerAgentId || "").trim();
   return !id || id === "user-persona";
+}
+
+function isCompactionBlock(block: ChatMessageBlock): boolean {
+  if (block.remoteImOrigin) return false;
+  const text = String(block.text || "").trim();
+  if (!text) return false;
+  return text.startsWith("[上下文整理]") || text.startsWith("[上下文压缩]");
 }
 
 function showStreamingUi(block: ChatMessageBlock): boolean {
