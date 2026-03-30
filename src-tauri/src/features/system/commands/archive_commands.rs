@@ -79,6 +79,7 @@ fn get_prompt_preview(
             last_effective_prompt_tokens: 0,
             status: "active".to_string(),
             summary: String::new(),
+            shell_workspace_path: None,
             archived_at: None,
             messages: Vec::new(),
             memory_recall_table: Vec::new(),
