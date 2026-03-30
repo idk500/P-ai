@@ -1,6 +1,33 @@
 const DELEGATE_RECENT_THREAD_LIMIT: usize = 10;
 
+fn delegate_parent_shell_workspace_path(
+    app_state: &AppState,
+    root_conversation_id: &str,
+    parent_chat_session_key: Option<&str>,
+) -> Option<String> {
+    if let Some(session_id) = parent_chat_session_key {
+        if let Ok(Some(conversation)) = terminal_session_conversation(app_state, session_id) {
+            if conversation
+                .shell_workspace_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_some()
+            {
+                return conversation.shell_workspace_path.clone();
+            }
+        }
+    }
+    let data = state_read_app_data_cached(app_state).ok()?;
+    data.conversations
+        .iter()
+        .find(|item| item.id == root_conversation_id)
+        .and_then(|conversation| conversation.shell_workspace_path.clone())
+        .filter(|value| !value.trim().is_empty())
+}
+
 fn delegate_runtime_thread_build(
+    app_state: &AppState,
     delegate: &DelegateEntry,
     target_api_config_id: &str,
     parent_chat_session_key: Option<String>,
@@ -19,6 +46,11 @@ fn delegate_runtime_thread_build(
     conversation.updated_at = delegate.updated_at.clone();
     conversation.last_user_at = None;
     conversation.last_assistant_at = None;
+    conversation.shell_workspace_path = delegate_parent_shell_workspace_path(
+        app_state,
+        &delegate.conversation_id,
+        parent_chat_session_key.as_deref(),
+    );
     DelegateRuntimeThread {
         delegate_id: delegate.delegate_id.clone(),
         root_conversation_id: delegate.conversation_id.clone(),
@@ -37,8 +69,12 @@ fn delegate_runtime_thread_create(
     target_api_config_id: &str,
     parent_chat_session_key: Option<String>,
 ) -> Result<String, String> {
-    let thread =
-        delegate_runtime_thread_build(delegate, target_api_config_id, parent_chat_session_key);
+    let thread = delegate_runtime_thread_build(
+        app_state,
+        delegate,
+        target_api_config_id,
+        parent_chat_session_key,
+    );
     let thread_id = thread.delegate_id.clone();
     let mut guard = app_state
         .delegate_runtime_threads

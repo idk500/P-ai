@@ -1402,17 +1402,10 @@ fn workspace_label_for_unarchived_conversation(
     state: &AppState,
     conversation: &Conversation,
 ) -> String {
-    let agent_id = conversation.agent_id.trim();
-    let conversation_id = conversation.id.trim();
-    if conversation_id.is_empty() {
-        return "默认工作空间".to_string();
+    if let Some(path) = terminal_workspace_path_from_conversation(conversation) {
+        return resolve_workspace_display_name(state, &path);
     }
-    let session_id =
-        normalize_terminal_tool_session_id(&inflight_chat_key(agent_id, Some(conversation_id)));
-    match terminal_session_root_canonical(state, &session_id) {
-        Ok(path) => resolve_workspace_display_name(state, &path),
-        Err(_) => "默认工作空间".to_string(),
-    }
+    "默认工作空间".to_string()
 }
 
 fn build_unarchived_conversation_summary(

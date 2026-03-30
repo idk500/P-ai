@@ -7,19 +7,56 @@ fn normalize_terminal_tool_session_id(session_id: &str) -> String {
     }
 }
 
-fn terminal_session_has_locked_root(state: &AppState, session_id: &str) -> bool {
+fn terminal_workspace_path_from_conversation(conversation: &Conversation) -> Option<PathBuf> {
+    let raw = conversation
+        .shell_workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let path = PathBuf::from(raw);
+    match path.canonicalize() {
+        Ok(canonical) if canonical.is_dir() => Some(canonical),
+        _ => None,
+    }
+}
+
+fn terminal_session_conversation_id(session_id: &str) -> Option<String> {
     let normalized = normalize_terminal_tool_session_id(session_id);
-    let root_text = {
-        let guard = match state.terminal_session_roots.lock() {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        guard.get(&normalized).cloned()
+    let (_, conversation_id) = normalized.split_once("::")?;
+    let trimmed = conversation_id.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn terminal_session_conversation(state: &AppState, session_id: &str) -> Result<Option<Conversation>, String> {
+    let Some(conversation_id) = terminal_session_conversation_id(session_id) else {
+        return Ok(None);
     };
-    let Some(root_text) = root_text else {
-        return false;
+    if let Some(conversation) = delegate_runtime_thread_conversation_get_any(state, &conversation_id)? {
+        return Ok(Some(conversation));
+    }
+    let data = state_read_app_data_cached(state)?;
+    Ok(data
+        .conversations
+        .iter()
+        .find(|item| item.id == conversation_id)
+        .cloned())
+}
+
+fn terminal_session_has_locked_root(state: &AppState, session_id: &str) -> bool {
+    let default_root = match terminal_default_session_root_canonical(state) {
+        Ok(path) => path,
+        Err(_) => return false,
     };
-    PathBuf::from(root_text).is_dir()
+    let session_root = match terminal_session_root_canonical(state, session_id) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    normalize_terminal_path_for_compare(&session_root)
+        != normalize_terminal_path_for_compare(&default_root)
 }
 
 fn normalize_terminal_timeout_ms(timeout_ms: Option<u64>) -> u64 {
@@ -281,6 +318,12 @@ fn terminal_default_session_root_canonical(state: &AppState) -> Result<PathBuf, 
 
 fn terminal_session_root_canonical(state: &AppState, session_id: &str) -> Result<PathBuf, String> {
     let default_root = terminal_default_session_root_canonical(state)?;
+    if let Some(conversation) = terminal_session_conversation(state, session_id)? {
+        if let Some(path) = terminal_workspace_path_from_conversation(&conversation) {
+            return Ok(path);
+        }
+        return Ok(default_root);
+    }
     let root_text = {
         let guard = state
             .terminal_session_roots
@@ -472,6 +515,54 @@ mod terminal_workspace_tests {
         );
         assert!(config.shell_workspaces[0].built_in);
         assert!(changed);
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn terminal_session_root_prefers_conversation_workspace_path() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "easy-call-ai-terminal-workspace-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let llm_workspace_path = temp_root.join("p-ai").join("llm-workspace");
+        let custom_workspace_path = temp_root.join("custom-shell-root");
+        std::fs::create_dir_all(&llm_workspace_path).expect("create llm workspace");
+        std::fs::create_dir_all(&custom_workspace_path).expect("create custom workspace");
+        let state = build_test_state(llm_workspace_path);
+        let mut data = AppData::default();
+        data.conversations.push(Conversation {
+            id: "conv-1".to_string(),
+            title: "Conversation".to_string(),
+            agent_id: "agent-1".to_string(),
+            conversation_kind: CONVERSATION_KIND_CHAT.to_string(),
+            root_conversation_id: None,
+            delegate_id: None,
+            created_at: now_iso(),
+            updated_at: now_iso(),
+            last_user_at: None,
+            last_assistant_at: None,
+            last_context_usage_ratio: 0.0,
+            last_effective_prompt_tokens: 0,
+            status: "active".to_string(),
+            summary: String::new(),
+            shell_workspace_path: Some(custom_workspace_path.to_string_lossy().to_string()),
+            archived_at: None,
+            messages: Vec::new(),
+            memory_recall_table: Vec::new(),
+        });
+        state_write_app_data_cached(&state, &data).expect("write app data");
+
+        let session_id = normalize_terminal_tool_session_id(&inflight_chat_key(
+            "agent-1",
+            Some("conv-1"),
+        ));
+        let resolved = terminal_session_root_canonical(&state, &session_id).expect("resolve root");
+
+        assert_eq!(
+            normalize_terminal_path_for_compare(&resolved),
+            normalize_terminal_path_for_compare(&custom_workspace_path)
+        );
 
         let _ = std::fs::remove_dir_all(temp_root);
     }

@@ -405,6 +405,62 @@ fn resolve_chat_tool_session_id(
     Ok(normalize_terminal_tool_session_id(&session_id))
 }
 
+fn resolve_chat_workspace_conversation_id(
+    state: &AppState,
+    agent_id: &str,
+    conversation_id: Option<&str>,
+) -> Result<String, String> {
+    if let Some(conversation_id) = conversation_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(conversation_id.to_string());
+    }
+
+    let data = state_read_app_data_cached(state)?;
+    let agent_id = agent_id.trim();
+    if let Some(conversation) = data
+        .conversations
+        .iter()
+        .rev()
+        .find(|item| {
+            item.summary.trim().is_empty()
+                && !conversation_is_delegate(item)
+                && (agent_id.is_empty() || item.agent_id.trim() == agent_id)
+        })
+    {
+        return Ok(conversation.id.clone());
+    }
+    Err("当前没有可用的活跃会话，需要提供 conversationId。".to_string())
+}
+
+fn update_conversation_shell_workspace_path(
+    state: &AppState,
+    conversation_id: &str,
+    shell_workspace_path: Option<String>,
+) -> Result<(), String> {
+    if delegate_runtime_thread_conversation_get(state, conversation_id)?.is_some() {
+        return delegate_runtime_thread_modify(state, conversation_id, move |thread| {
+            thread.conversation.shell_workspace_path = shell_workspace_path;
+            Ok(())
+        });
+    }
+
+    let mut data = state_read_app_data_cached(state)?;
+    let Some(conversation) = data
+        .conversations
+        .iter_mut()
+        .find(|item| item.id == conversation_id)
+    else {
+        return Err(format!("指定会话不存在：{conversation_id}"));
+    };
+    conversation.shell_workspace_path = shell_workspace_path;
+    let overview_payload = build_unarchived_conversation_overview_payload(state, &data);
+    state_write_app_data_cached(state, &data)?;
+    emit_unarchived_conversation_overview_updated_payload(state, &overview_payload);
+    Ok(())
+}
+
 fn workspace_name_from_path(path: &Path) -> String {
     path.file_name()
         .and_then(|v| v.to_str())
@@ -540,12 +596,22 @@ fn lock_chat_shell_workspace(
     if !target.is_dir() {
         return Err("workspacePath must be a directory.".to_string());
     }
+    let conversation_id = resolve_chat_workspace_conversation_id(
+        &state,
+        &input.agent_id,
+        input.conversation_id.as_deref(),
+    )?;
+    update_conversation_shell_workspace_path(
+        &state,
+        &conversation_id,
+        Some(target.to_string_lossy().to_string()),
+    )?;
     {
         let mut roots = state
             .terminal_session_roots
             .lock()
             .map_err(|_| "Failed to lock terminal session roots".to_string())?;
-        roots.insert(session_id.clone(), target.to_string_lossy().to_string());
+        roots.remove(&session_id);
     }
     Ok(ChatShellWorkspaceOutput {
         session_id,
@@ -567,6 +633,12 @@ fn unlock_chat_shell_workspace(
             &input.agent_id,
             input.conversation_id.as_deref(),
         )?;
+    let conversation_id = resolve_chat_workspace_conversation_id(
+        &state,
+        &input.agent_id,
+        input.conversation_id.as_deref(),
+    )?;
+    update_conversation_shell_workspace_path(&state, &conversation_id, None)?;
     {
         let mut roots = state
             .terminal_session_roots

@@ -1277,6 +1277,8 @@ struct Conversation {
     #[serde(default)]
     summary: String,
     #[serde(default)]
+    shell_workspace_path: Option<String>,
+    #[serde(default)]
     archived_at: Option<String>,
     messages: Vec<ChatMessage>,
     #[serde(default)]
