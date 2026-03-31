@@ -232,6 +232,12 @@ fn main() {
         }
         return;
     }
+    if std::env::args().any(|arg| arg == MCP_TODO_SERVER_FLAG) {
+        if let Err(err) = run_todo_mcp_server() {
+            eprintln!("{err}");
+        }
+        return;
+    }
 
     let state = match AppState::new() {
         Ok(state) => state,

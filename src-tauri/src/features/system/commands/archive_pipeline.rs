@@ -324,6 +324,7 @@ fn prepare_background_archive_active_conversation(
                     let summary_message = build_initial_summary_context_message(
                         Some(source.summary.as_str()),
                         Some(snapshot.as_str()),
+                        Some(&conversation.current_todos),
                     );
                     conversation.last_user_at = Some(summary_message.created_at.clone());
                     conversation.updated_at = summary_message.created_at.clone();
@@ -333,7 +334,11 @@ fn prepare_background_archive_active_conversation(
                 Ok(None) => {
                     let mut conversation = conversation;
                     let summary_message =
-                        build_initial_summary_context_message(Some(source.summary.as_str()), None);
+                        build_initial_summary_context_message(
+                            Some(source.summary.as_str()),
+                            None,
+                            Some(&conversation.current_todos),
+                        );
                     conversation.last_user_at = Some(summary_message.created_at.clone());
                     conversation.updated_at = summary_message.created_at.clone();
                     conversation.messages.push(summary_message);
@@ -347,7 +352,11 @@ fn prepare_background_archive_active_conversation(
                     ));
                     let mut conversation = conversation;
                     let summary_message =
-                        build_initial_summary_context_message(Some(source.summary.as_str()), None);
+                        build_initial_summary_context_message(
+                            Some(source.summary.as_str()),
+                            None,
+                            Some(&conversation.current_todos),
+                        );
                     conversation.last_user_at = Some(summary_message.created_at.clone());
                     conversation.updated_at = summary_message.created_at.clone();
                     conversation.messages.push(summary_message);
@@ -357,7 +366,11 @@ fn prepare_background_archive_active_conversation(
         } else {
             let mut conversation = conversation;
             let summary_message =
-                build_initial_summary_context_message(Some(source.summary.as_str()), None);
+                build_initial_summary_context_message(
+                    Some(source.summary.as_str()),
+                    None,
+                    Some(&conversation.current_todos),
+                );
             conversation.last_user_at = Some(summary_message.created_at.clone());
             conversation.updated_at = summary_message.created_at.clone();
             conversation.messages.push(summary_message);
@@ -437,7 +450,13 @@ async fn summarize_archived_conversation_with_model_v2(
                 user_alias,
                 &current_user_profile,
             )),
-            latest_user_extra_blocks: vec![build_summary_context_json_contract_block(scene)],
+            latest_user_extra_blocks: {
+                let mut blocks = vec![build_summary_context_json_contract_block(scene)];
+                if let Some(todo_block) = build_summary_context_todo_block(source_conversation) {
+                    blocks.push(todo_block);
+                }
+                blocks
+            },
             latest_images: Some(Vec::new()),
             latest_audios: Some(Vec::new()),
             ..ChatPromptOverrides::default()
@@ -932,6 +951,7 @@ fn build_compaction_message(
     summary: &str,
     compaction_reason: &str,
     user_profile_snapshot: Option<&str>,
+    current_todos: Option<&[ConversationTodoItem]>,
 ) -> ChatMessage {
     let now = now_iso();
     let reason = compaction_reason.trim();
@@ -945,11 +965,16 @@ fn build_compaction_message(
         .filter(|value| !value.is_empty())
         .map(|value| format!("\n\n{}", value))
         .unwrap_or_default();
+    let todo_snapshot = current_todos
+        .and_then(todo_markdown_block)
+        .map(|value| format!("\n\n{}", value))
+        .unwrap_or_default();
     let text = format!(
-        "[上下文整理]\n{}整理摘要：\n{}{}",
+        "[上下文整理]\n{}整理摘要：\n{}{}{}",
         reason_line,
         clean_text(summary.trim()),
-        profile_snapshot
+        profile_snapshot,
+        todo_snapshot
     );
     ChatMessage {
         id: Uuid::new_v4().to_string(),
@@ -973,12 +998,13 @@ fn build_compaction_message(
 fn build_initial_summary_context_message(
     last_archive_summary: Option<&str>,
     user_profile_snapshot: Option<&str>,
+    current_todos: Option<&[ConversationTodoItem]>,
 ) -> ChatMessage {
     let summary = last_archive_summary
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("（暂无历史归档摘要）");
-    let mut message = build_compaction_message(summary, "", user_profile_snapshot);
+    let mut message = build_compaction_message(summary, "", user_profile_snapshot, current_todos);
     message.provider_meta = Some(serde_json::json!({
         "message_meta": {
             "kind": "summary_context_seed",
@@ -1522,8 +1548,12 @@ async fn run_context_compaction_pipeline_inner(
         .iter()
         .position(|item| item.id == source.id && item.summary.trim().is_empty())
         .ok_or_else(|| "活动对话已变化，请重试上下文整理。".to_string())?;
-    let compression_message =
-        build_compaction_message(&summary_draft.summary, compaction_reason, user_profile_snapshot.as_deref());
+    let compression_message = build_compaction_message(
+        &summary_draft.summary,
+        compaction_reason,
+        user_profile_snapshot.as_deref(),
+        Some(&source.current_todos),
+    );
     let compression_message_id = compression_message.id.clone();
     {
         let conversation = data

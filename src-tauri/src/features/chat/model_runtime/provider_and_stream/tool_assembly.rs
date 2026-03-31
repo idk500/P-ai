@@ -101,6 +101,7 @@ async fn assemble_runtime_tools(
     let has_read_file = tool_enabled(selected_api, agent, current_department, "read_file");
     let has_apply_patch = tool_enabled(selected_api, agent, current_department, "apply_patch");
     let has_task = tool_enabled(selected_api, agent, current_department, "task");
+    let has_todo = tool_enabled(selected_api, agent, current_department, "todo");
     let has_delegate_base = tool_enabled(selected_api, agent, current_department, "delegate");
     let delegate_runtime_reason = if has_delegate_base {
         delegate_tool_runtime_disabled_reason(app_state, tool_session_id)
@@ -118,6 +119,7 @@ async fn assemble_runtime_tools(
     let mut unavailable_tool_notices = Vec::<String>::new();
     let mut mcp_read_file_client: Option<ReadFileMcpClient> = None;
     let mut mcp_operate_client: Option<OperateMcpClient> = None;
+    let mut mcp_todo_client: Option<TodoMcpClient> = None;
 
     tool_manifest.push(tool_manifest_item(
         "builtin",
@@ -355,6 +357,37 @@ async fn assemble_runtime_tools(
         ));
     }
 
+    if has_todo {
+        match try_attach_todo_mcp_tool(&mut tools, tool_session_id).await {
+            Ok(client) => {
+                mcp_todo_client = Some(client);
+                tool_manifest.push(tool_manifest_item("builtin_mcp", "todo", true, true, None));
+            }
+            Err(err) => {
+                eprintln!("[MCP] todo degraded to disabled: {err}");
+                unavailable_tool_notices.push(format!(
+                    "工具 `todo` MCP 挂载失败：{}。",
+                    err
+                ));
+                tool_manifest.push(tool_manifest_item(
+                    "builtin_mcp",
+                    "todo",
+                    true,
+                    false,
+                    Some(format!("MCP attach failed: {err}")),
+                ));
+            }
+        }
+    } else {
+        tool_manifest.push(tool_manifest_item(
+            "builtin_mcp",
+            "todo",
+            false,
+            false,
+            department_reason("todo").or_else(|| Some("当前人格未启用该工具".to_string())),
+        ));
+    }
+
     if has_task {
         let state = app_state
             .ok_or_else(|| "task requires app state".to_string())?
@@ -422,6 +455,7 @@ async fn assemble_runtime_tools(
         unavailable_tool_notices,
         _mcp_read_file_client: mcp_read_file_client,
         _mcp_operate_client: mcp_operate_client,
+        _mcp_todo_client: mcp_todo_client,
     })
 }
 
@@ -502,6 +536,47 @@ async fn try_attach_operate_mcp_tool(
 
     if !attached {
         return Err("MCP operate server did not expose operate tool".to_string());
+    }
+    Ok(client)
+}
+
+async fn try_attach_todo_mcp_tool(
+    tools: &mut Vec<Box<dyn ToolDyn>>,
+    tool_session_id: &str,
+) -> Result<TodoMcpClient, String> {
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("Resolve current executable for MCP todo failed: {err}"))?;
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.arg(MCP_TODO_SERVER_FLAG);
+    cmd.arg(MCP_TODO_SESSION_FLAG).arg(tool_session_id);
+    let transport = rmcp::transport::TokioChildProcess::new(cmd)
+        .map_err(|err| format!("Start MCP todo child process failed: {err}"))?;
+
+    let client = ()
+        .serve(transport)
+        .await
+        .map_err(|err| format!("Connect to MCP todo server failed: {err}"))?;
+    let sink = client.peer().clone();
+    let defs = client
+        .list_all_tools()
+        .await
+        .map_err(|err| format!("List MCP todo tools failed: {err}"))?;
+
+    let mut attached = false;
+    for def in defs {
+        if def.name.as_ref() != MCP_TODO_TOOL_NAME {
+            continue;
+        }
+        tools.push(Box::new(rig::tool::rmcp::McpTool::from_mcp_server(
+            def,
+            sink.clone(),
+        )));
+        attached = true;
+        break;
+    }
+
+    if !attached {
+        return Err("MCP todo server did not expose todo tool".to_string());
     }
     Ok(client)
 }

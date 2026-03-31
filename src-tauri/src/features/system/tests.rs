@@ -58,3 +58,130 @@
         v1_ok_mock.assert();
         assert_eq!(models, vec!["moonshot-v1-8k".to_string()]);
     }
+
+    #[test]
+    fn conversation_todo_replace_should_store_next_step_and_clear_when_done() {
+        let state = test_chat_runtime_state();
+        let conversation_id = "conversation-todo-a".to_string();
+        let now = now_iso();
+        let mut data = AppData::default();
+        data.conversations.push(Conversation {
+            id: conversation_id.clone(),
+            title: "todo".to_string(),
+            agent_id: DEFAULT_AGENT_ID.to_string(),
+            conversation_kind: CONVERSATION_KIND_CHAT.to_string(),
+            root_conversation_id: None,
+            delegate_id: None,
+            created_at: now.clone(),
+            updated_at: now,
+            last_user_at: None,
+            last_assistant_at: None,
+            last_context_usage_ratio: 0.0,
+            last_effective_prompt_tokens: 0,
+            status: "active".to_string(),
+            summary: String::new(),
+            user_profile_snapshot: String::new(),
+            shell_workspace_path: None,
+            archived_at: None,
+            messages: Vec::new(),
+            current_todos: Vec::new(),
+            memory_recall_table: Vec::new(),
+        });
+        state_write_app_data_cached(&state, &data).expect("write app data");
+
+        let stored = conversation_todo_replace(
+            &state,
+            &conversation_id,
+            vec![
+                ConversationTodoItem {
+                    content: "Add todo MCP server".to_string(),
+                    status: "in_progress".to_string(),
+                },
+                ConversationTodoItem {
+                    content: "Run cargo check".to_string(),
+                    status: "pending".to_string(),
+                },
+            ],
+        )
+        .expect("store todos");
+
+        assert_eq!(stored.len(), 2);
+        assert_eq!(
+            todo_response_text(&stored),
+            "## Current Todo List\n\n→ Add todo MCP server\n○ Run cargo check"
+        );
+        assert_eq!(
+            conversation_todo_list(&state, &conversation_id)
+                .expect("read todos")
+                .len(),
+            2
+        );
+
+        let cleared = conversation_todo_replace(
+            &state,
+            &conversation_id,
+            vec![
+                ConversationTodoItem {
+                    content: "Add todo MCP server".to_string(),
+                    status: "completed".to_string(),
+                },
+                ConversationTodoItem {
+                    content: "Run cargo check".to_string(),
+                    status: "completed".to_string(),
+                },
+            ],
+        )
+        .expect("clear todos");
+
+        assert!(cleared.is_empty());
+        assert_eq!(
+            todo_response_text(&[
+                ConversationTodoItem {
+                    content: "Add todo MCP server".to_string(),
+                    status: "completed".to_string(),
+                },
+                ConversationTodoItem {
+                    content: "Run cargo check".to_string(),
+                    status: "completed".to_string(),
+                },
+            ]),
+            "## Current Todo List\n\n✓ Add todo MCP server\n✓ Run cargo check\n\n已经完成了所有步骤，请向用户进行汇报"
+        );
+        assert!(
+            conversation_todo_list(&state, &conversation_id)
+                .expect("read cleared todos")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn build_compaction_message_should_append_current_todo_list_after_memory_snapshot() {
+        let message = build_compaction_message(
+            "这里是压缩摘要",
+            "manual",
+            Some("<user profile snapshot>\n记忆块\n</user profile snapshot>"),
+            Some(&[
+                ConversationTodoItem {
+                    content: "Add todo MCP server".to_string(),
+                    status: "in_progress".to_string(),
+                },
+                ConversationTodoItem {
+                    content: "Run cargo check".to_string(),
+                    status: "pending".to_string(),
+                },
+            ]),
+        );
+        let text = message
+            .parts
+            .iter()
+            .find_map(|part| match part {
+                MessagePart::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .expect("compaction text");
+
+        assert!(text.contains("记忆块"));
+        assert!(text.contains("## Current Todo List"));
+        assert!(text.contains("- [in_progress] Add todo MCP server"));
+        assert!(text.contains("- [pending] Run cargo check"));
+    }

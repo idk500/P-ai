@@ -52,6 +52,7 @@
             shell_workspace_path: None,
             archived_at: None,
             messages,
+            current_todos: Vec::new(),
             memory_recall_table: Vec::new(),
         }
     }

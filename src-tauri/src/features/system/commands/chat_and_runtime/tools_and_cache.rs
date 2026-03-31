@@ -118,6 +118,7 @@ fn check_tools_status(
             "operate" => ("loaded".to_string(), "桌面输入工具可用（鼠标/键盘/文本）".to_string()),
             "command" => ("loaded".to_string(), "统一命令工具可用".to_string()),
             "task" => ("loaded".to_string(), "任务工具可用".to_string()),
+            "todo" => ("loaded".to_string(), "会话内 Todo 步骤追踪工具可用".to_string()),
             "delegate" => ("loaded".to_string(), "委托工具可用".to_string()),
             "remote_im_send" => (
                 "loaded".to_string(),

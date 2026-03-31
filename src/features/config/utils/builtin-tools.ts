@@ -13,6 +13,7 @@ const BUILTIN_TOOL_DEFAULTS: ReadonlyArray<Readonly<ApiToolItem>> = [
   { id: "reload", command: "builtin", args: ["reload"], enabled: true, values: {} },
   { id: "organize_context", command: "builtin", args: ["organize_context"], enabled: true, values: {} },
   { id: "task", command: "builtin", args: ["task"], enabled: true, values: {} },
+  { id: "todo", command: "builtin", args: ["todo"], enabled: true, values: {} },
   { id: "delegate", command: "builtin", args: ["delegate"], enabled: true, values: {} },
   { id: "remote_im_send", command: "builtin", args: ["remote_im_send"], enabled: false, values: {} },
 ];

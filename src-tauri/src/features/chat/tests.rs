@@ -1142,6 +1142,7 @@
             shell_workspace_path: None,
             archived_at: None,
             messages: Vec::new(),
+            current_todos: Vec::new(),
             memory_recall_table: Vec::new(),
         }
     }
@@ -1547,6 +1548,7 @@
                 tool_call: None,
                 mcp_call: None,
             }],
+            current_todos: Vec::new(),
             memory_recall_table: Vec::new(),
         }];
         state_write_app_data_cached(&state, &data).expect("write app data");

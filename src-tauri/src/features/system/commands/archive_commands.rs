@@ -100,6 +100,7 @@ fn get_prompt_preview(
             shell_workspace_path: None,
             archived_at: None,
             messages: Vec::new(),
+            current_todos: Vec::new(),
             memory_recall_table: Vec::new(),
         });
     let latest_user_message = conversation
@@ -203,13 +204,19 @@ fn get_prompt_preview(
                         &build_user_profile_memory_board(&state.data_path, &host_agent)?
                             .unwrap_or_else(|| "（无）".to_string()),
                     )),
-                    latest_user_extra_blocks: vec![build_summary_context_json_contract_block(
-                        if preview_mode == PromptPreviewMode::Compaction {
-                            SummaryContextScene::Compaction
-                        } else {
-                            SummaryContextScene::Archive
-                        },
-                    )],
+                    latest_user_extra_blocks: {
+                        let mut blocks = vec![build_summary_context_json_contract_block(
+                            if preview_mode == PromptPreviewMode::Compaction {
+                                SummaryContextScene::Compaction
+                            } else {
+                                SummaryContextScene::Archive
+                            },
+                        )];
+                        if let Some(todo_block) = build_summary_context_todo_block(&conversation) {
+                            blocks.push(todo_block);
+                        }
+                        blocks
+                    },
                     latest_images: Some(Vec::new()),
                     latest_audios: Some(Vec::new()),
                     ..Default::default()
