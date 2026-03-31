@@ -1,5 +1,26 @@
 # 变更日志
 
+## 更新（未发布）：新增会话级 Todo MCP 工具与压缩摘要待办段
+
+- 新增（conversation-todo-mcp）：新增会话级 `todo` MCP 工具
+  - `Conversation` 新增 `current_todos` 字段，Todo 状态直接跟随会话持久化，不再单独维护运行时临时表
+  - 新增 `src-tauri/src/features/system/tools/todo_mcp.rs`，按当前工具会话定位目标会话，并全量覆盖当前 Todo 列表
+  - `todo` 工具返回改为 `## Current Todo List` 步骤板文本，使用 `✓ / → / ○` 标记已完成、进行中和未开始步骤；全部完成时追加“请向用户进行汇报”
+  - 默认工具目录、运行时 MCP 挂载、前端工具目录与工具状态检查同步接入 `todo`
+
+- 新增（todo-guide-and-board-prompting）：新增 Todo 专用系统提示词与会话快照注入
+  - 聊天系统提示词新增固定 `todo guide`，明确 Todo 适用场景、`3~7` 步建议范围、单一 `in_progress` 规则与“全部完成后直接汇报”
+  - 当前会话存在 Todo 时，聊天请求会额外注入 `todo board`，让模型直接看到当前步骤板而不是只依赖上下文回忆
+
+- 新增（summary-context-current-todo-list）：上下文压缩摘要追加当前待办段
+  - SummaryContext 压缩/归档链路在记忆相关段落后追加 `## Current Todo List`
+  - 新建会话摘要种子与压缩消息都会带上当前会话 Todo，避免上下文压缩后丢失“当前做到哪一步”
+
+- 测试（todo-mcp-and-compaction-regression）：补齐 Todo 关键回归
+  - Rust 单测覆盖 Todo 覆盖写入、完成后自动清空与步骤板文本返回格式
+  - Rust 单测覆盖压缩消息会在记忆块后追加 `## Current Todo List`
+  - 工具目录测试覆盖前端 `todo` schema 与运行时 MCP 定义一致
+
 ## 更新（未发布）：统一 SummaryContext、记忆RAG 与压缩消息结构标记
 
 - 重构（summary-context-memory-rag-unification）：统一 SummaryContext、记忆 RAG 与用户画像链路

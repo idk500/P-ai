@@ -551,6 +551,7 @@ mod terminal_workspace_tests {
             shell_workspace_path: Some(custom_workspace_path.to_string_lossy().to_string()),
             archived_at: None,
             messages: Vec::new(),
+            current_todos: Vec::new(),
             memory_recall_table: Vec::new(),
         });
         state_write_app_data_cached(&state, &data).expect("write app data");

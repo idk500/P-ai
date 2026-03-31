@@ -189,6 +189,7 @@ fn build_conversation_record(
         shell_workspace_path: None,
         archived_at: None,
         messages: Vec::new(),
+        current_todos: Vec::new(),
         memory_recall_table: Vec::new(),
     }
 }
@@ -239,6 +240,7 @@ fn build_foreground_chat_conversation_record(
     let summary_message = build_initial_summary_context_message(
         last_archive_summary,
         user_profile_snapshot.as_deref(),
+        Some(&conversation.current_todos),
     );
     conversation.last_user_at = Some(summary_message.created_at.clone());
     conversation.updated_at = summary_message.created_at.clone();

@@ -838,6 +838,7 @@ async fn process_conversation_batch(
                     let summary_message = build_initial_summary_context_message(
                         last_archive_summary.as_deref(),
                         Some(conversation.user_profile_snapshot.as_str()),
+                        Some(&conversation.current_todos),
                     );
                     persisted_batch_messages.push(summary_message.clone());
                     conversation.messages.insert(0, summary_message);

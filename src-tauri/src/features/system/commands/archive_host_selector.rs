@@ -131,6 +131,7 @@ mod archive_host_selection_tests {
             shell_workspace_path: None,
             archived_at: None,
             messages: vec![mk_msg("assistant"), mk_msg("assistant"), mk_msg("assistant")],
+            current_todos: Vec::new(),
             memory_recall_table: Vec::new(),
         };
         let host = choose_archive_host_agent_id(&data, &source, "pub-b");
@@ -166,6 +167,7 @@ mod archive_host_selection_tests {
             shell_workspace_path: None,
             archived_at: None,
             messages: vec![mk_msg("assistant")],
+            current_todos: Vec::new(),
             memory_recall_table: Vec::new(),
         };
         let host = choose_archive_host_agent_id(&data, &source, "p2");

@@ -339,6 +339,13 @@ fn default_api_tools() -> Vec<ApiToolConfig> {
             values: serde_json::json!({}),
         },
         ApiToolConfig {
+            id: "todo".to_string(),
+            command: "builtin".to_string(),
+            args: vec!["todo".to_string()],
+            enabled: true,
+            values: serde_json::json!({}),
+        },
+        ApiToolConfig {
             id: "delegate".to_string(),
             command: "builtin".to_string(),
             args: vec!["delegate".to_string()],
@@ -1254,6 +1261,13 @@ struct RemoteImActivationSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ConversationTodoItem {
+    content: String,
+    status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Conversation {
     id: String,
     title: String,
@@ -1283,6 +1297,8 @@ struct Conversation {
     #[serde(default)]
     archived_at: Option<String>,
     messages: Vec<ChatMessage>,
+    #[serde(default)]
+    current_todos: Vec<ConversationTodoItem>,
     #[serde(default)]
     memory_recall_table: Vec<String>,
 }

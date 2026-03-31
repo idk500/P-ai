@@ -1140,6 +1140,7 @@ async fn send_chat_message_inner(
                 shell_workspace_path: None,
                 archived_at: None,
                 messages: Vec::new(),
+                current_todos: Vec::new(),
                 memory_recall_table: Vec::new(),
             }
         };
@@ -1416,10 +1417,17 @@ async fn send_chat_message_inner(
                 )?;
             }
         }
+        let current_department = department_for_agent_id(&app_config, &agent.id);
+        let todo_enabled = tool_enabled(&selected_api, &agent, current_department, "todo");
         let mut chat_overrides = ChatPromptOverrides::default();
         chat_overrides
             .system_preamble_blocks
             .push(build_hidden_skill_snapshot_block(&state));
+        if todo_enabled {
+            chat_overrides
+                .system_preamble_blocks
+                .push(build_todo_guide_block());
+        }
         if let Some(runtime_block) = build_remote_im_activation_runtime_block(
             &remote_im_activation_sources,
             &app_config.ui_language,
@@ -1431,6 +1439,11 @@ async fn send_chat_message_inner(
             if !is_delegate_conversation {
                 if let Some(task_board) = build_hidden_task_board_block(&state) {
                     chat_overrides.latest_user_extra_blocks.push(task_board);
+                }
+            }
+            if todo_enabled {
+                if let Some(todo_board) = build_conversation_todo_board_block(&conversation) {
+                    chat_overrides.latest_user_extra_blocks.push(todo_board);
                 }
             }
             let attachment_meta = normalize_payload_attachments(input.payload.attachments.as_ref());
