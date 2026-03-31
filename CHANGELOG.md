@@ -1,5 +1,10 @@
 # 变更日志
 
+## 更新（未发布）：发布 0.8.8 版本
+
+- 发布（release-version-0-8-8）：同步更新应用版本号
+  - `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 统一从 `0.8.71` 更新为 `0.8.8`
+
 ## 更新（未发布）：补充需求对齐与反馈非指令规则
 
 - 调整（highest-instruction-alignment-guardrails）：系统准则补充需求对齐与反馈处理边界
