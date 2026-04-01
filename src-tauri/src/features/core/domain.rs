@@ -1770,7 +1770,7 @@ impl AppState {
         let next_config_dir = next_project_dirs.config_dir().to_path_buf();
         let legacy_exists = legacy_config_dir.exists();
         let next_exists = next_config_dir.exists();
-        let mut migrated_legacy_to_new = false;
+        let mut _migrated_legacy_to_new = false;
 
         let config_dir = if next_exists {
             next_config_dir.clone()
@@ -1791,7 +1791,7 @@ impl AppState {
                         next_config_dir.display()
                     )
                 })?;
-                migrated_legacy_to_new = true;
+                _migrated_legacy_to_new = true;
                 next_config_dir.clone()
             } else {
                 fs::create_dir_all(&next_config_dir).map_err(|err| {
@@ -1803,13 +1803,6 @@ impl AppState {
                 next_config_dir.clone()
             }
         };
-        eprintln!(
-            "[配置路径] 固定使用 p-ai: selected={}, legacy_exists={}, next_exists_before={}, migrated_legacy_to_new={}",
-            config_dir.display(),
-            legacy_exists,
-            next_exists,
-            migrated_legacy_to_new
-        );
         fs::create_dir_all(&config_dir)
             .map_err(|err| format!("Create config directory failed: {err}"))?;
         let app_root = config_dir
