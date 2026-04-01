@@ -27,12 +27,12 @@ impl OperateMcpServer {
         >,
     ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
         let started = std::time::Instant::now();
-        let script_line_count = args
+        let _script_line_count = args
             .script
             .lines()
             .filter(|line| !line.trim().is_empty())
             .count();
-        let script_char_count = args.script.chars().count();
+        let _script_char_count = args.script.chars().count();
         let result = run_operate_tool(args).await.map_err(|err| {
             rmcp::ErrorData::internal_error(
                 "operate failed",
@@ -42,18 +42,6 @@ impl OperateMcpServer {
             )
         })?;
         let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        runtime_log_info(format!(
-            "[MCP] 完成，任务=operate，触发条件=script_lines={}, script_chars={}，count={}，latest_screenshot={}，elapsed_ms={}",
-            script_line_count,
-            script_char_count,
-            result.executed_count,
-            result
-                .latest_screenshot
-                .as_ref()
-                .map(|shot| format!("mode={},width={},height={}", shot.mode, shot.width, shot.height))
-                .unwrap_or_else(|| "none".to_string()),
-            elapsed_ms
-        ));
         let text = serde_json::to_string(&result).map_err(|err| {
             rmcp::ErrorData::internal_error(
                 "serialize operate payload failed",

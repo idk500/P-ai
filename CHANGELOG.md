@@ -1,5 +1,13 @@
 # 变更日志
 
+## 更新（未发布）：收口聊天耗时与内置 MCP 噪音日志
+
+- 调整（log-noise-reduction-for-chat-and-mcp）：清理聊天链路中的低价值日志输出
+  - 聊天耗时改为仅保留最后一条中文汇总日志，不再在运行阶段逐条输出 `stage=...` 调试行
+  - 移除启动期常规 `[配置路径]` 输出，避免每次启动都打印目录选择细节
+  - 收口内置 `read_file` / `operate` MCP 的开始与完成日志，仅保留失败和异常场景
+  - MCP 自动重部署在无异常时不再打印“完成”提示，仅在存在错误时输出异常信息
+
 ## 更新（未发布）：移除 DeepSeek/Kimi 旧协议通路
 
 - 重构（remove-legacy-deepseek-kimi-protocol）：清理独立 `deepseek/kimi` 请求格式与运行时分支

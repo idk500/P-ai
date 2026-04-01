@@ -594,6 +594,50 @@ async fn send_chat_message_inner(
     let chat_started_at = std::time::Instant::now();
     let stage_timeline = std::sync::Arc::new(std::sync::Mutex::new(Vec::<LlmRoundLogStage>::new()));
     let stage_timeline_for_chat = stage_timeline.clone();
+    let describe_chat_stage = |stage: &str| -> String {
+        let title = if stage == "send_chat_message_inner.start" {
+            "开始发送消息".to_string()
+        } else if stage == "runtime_and_session_ready" {
+            "运行时与会话准备完成".to_string()
+        } else if stage == "run.begin" {
+            "进入执行阶段".to_string()
+        } else if stage == "attachments_processed" {
+            "附件处理完成".to_string()
+        } else if stage == "prepare_context.begin" {
+            "开始准备请求上下文".to_string()
+        } else if stage == "prepare_context.memory_recall_done" {
+            "记忆召回完成".to_string()
+        } else if stage == "prepare_context.user_message_persisted" {
+            "用户消息持久化完成".to_string()
+        } else if stage == "prepare_context.prompt_built" {
+            "提示词主结构生成完成".to_string()
+        } else if stage == "prepare_context.prompt_tokens_estimated" {
+            "提示词 token 估算完成".to_string()
+        } else if stage == "prepare_context.state_persisted" {
+            "应用状态持久化完成".to_string()
+        } else if stage == "prepare_context.done" {
+            "请求上下文准备完成".to_string()
+        } else if stage == "pre_send_archive_checked" {
+            "发送前归档检查完成".to_string()
+        } else if stage == "prompt_ready" {
+            "提示词准备完成".to_string()
+        } else if stage.starts_with("model_candidate.start[") {
+            "开始尝试候选模型".to_string()
+        } else if stage.starts_with("model_request.start[") {
+            "模型请求开始".to_string()
+        } else if stage.starts_with("model_request.finish[") {
+            "模型请求完成".to_string()
+        } else if stage == "model_reply_ready" {
+            "模型回复已就绪".to_string()
+        } else if stage == "assistant_message_persisted" {
+            "助理消息已持久化".to_string()
+        } else if stage == "send_chat_message_inner.finish" {
+            "发送消息结束".to_string()
+        } else {
+            "未命名阶段".to_string()
+        };
+        format!("{}（{}）", title, stage)
+    };
     let log_chat_stage = |stage: &str| {
         let elapsed_ms = chat_started_at
             .elapsed()
@@ -610,10 +654,30 @@ async fn send_chat_message_inner(
                 since_prev_ms,
             });
         }
+    };
+    let flush_chat_timeline = |reason: &str| {
+        let Ok(timeline) = stage_timeline.lock() else {
+            return;
+        };
+        if timeline.is_empty() {
+            return;
+        }
+        let summary = timeline
+            .iter()
+            .map(|item| {
+                format!(
+                    "{}:{}ms（较上阶段 +{}ms）",
+                    describe_chat_stage(&item.stage),
+                    item.elapsed_ms,
+                    item.since_prev_ms
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
         eprintln!(
-            "[聊天耗时] stage={}, elapsed_ms={}",
-            stage,
-            elapsed_ms
+            "[聊天耗时] 汇总 原因={}，阶段={}",
+            reason,
+            summary
         );
     };
     log_chat_stage("send_chat_message_inner.start");
@@ -783,11 +847,6 @@ async fn send_chat_message_inner(
                 since_prev_ms,
             });
         }
-        eprintln!(
-            "[聊天耗时] stage={}, elapsed_ms={}",
-            stage,
-            elapsed_ms
-        );
     };
     log_run_stage("run.begin");
     if !resolved_api.request_format.is_chat_text() {
@@ -978,6 +1037,7 @@ async fn send_chat_message_inner(
     let mut archived_before_send = false;
 
     let prepare_request_context = |persist_user_message: bool| -> Result<_, String> {
+    log_run_stage("prepare_context.begin");
     let (
         _primary_model_name,
         prepared_prompt,
@@ -1215,6 +1275,7 @@ async fn send_chat_message_inner(
                     ));
                 }
             }
+            log_run_stage("prepare_context.memory_recall_done");
             let now = now_iso();
             let user_message = ChatMessage {
                 id: Uuid::new_v4().to_string(),
@@ -1315,6 +1376,7 @@ async fn send_chat_message_inner(
                     conversation.clone(),
                 )?;
             }
+            log_run_stage("prepare_context.user_message_persisted");
         }
         let current_department = department_for_agent_id(&app_config, &agent.id);
         let todo_enabled = tool_enabled(&selected_api, &agent, current_department, "todo");
@@ -1389,6 +1451,7 @@ async fn send_chat_message_inner(
             Some(&resolved_api),
             Some(enable_pdf_images),
         );
+        log_run_stage("prepare_context.prompt_built");
         let tool_loop_auto_compaction_context = idx.map(|_| ToolLoopAutoCompactionContext {
             conversation_id: conversation.id.clone(),
             prompt_mode,
@@ -1416,6 +1479,7 @@ async fn send_chat_message_inner(
         let conversation_id = conversation.id.clone();
         let estimated_prompt_tokens =
             estimate_prepared_prompt_tokens(&prepared, &selected_api, &agent);
+        log_run_stage("prepare_context.prompt_tokens_estimated");
 
         if persist_user_message && !is_runtime_conversation {
             state_write_app_data_cached(&state, &data)?;
@@ -1455,6 +1519,7 @@ async fn send_chat_message_inner(
                     persisted_user_meta
                 );
             }
+            log_run_stage("prepare_context.state_persisted");
         }
         drop(guard);
 
@@ -1472,6 +1537,7 @@ async fn send_chat_message_inner(
             is_runtime_conversation,
         )
     };
+    log_run_stage("prepare_context.done");
     Ok((
         _primary_model_name,
         prepared_prompt,
@@ -1597,13 +1663,11 @@ async fn send_chat_message_inner(
     let mut active_resolved_api = resolved_api.clone();
     let mut fallback_errors = Vec::<String>::new();
     for (candidate_index, candidate_api_id) in candidate_api_ids.iter().enumerate() {
-        eprintln!(
-            "[聊天耗时] stage=model_candidate.start, elapsed_ms={}, candidate_index={}, candidate_api_id={}",
-            chat_started_at.elapsed().as_millis(),
-            candidate_index,
-            candidate_api_id
+        let candidate_stage = format!(
+            "model_candidate.start[candidate_index={},candidate_api_id={}]",
+            candidate_index, candidate_api_id
         );
-        log_run_stage("model_candidate.start");
+        log_run_stage(&candidate_stage);
         let mut candidate_selected_api = if candidate_api_id == &selected_api.id {
             selected_api.clone()
         } else {
@@ -1631,13 +1695,12 @@ async fn send_chat_message_inner(
         let max_failure_retries = FIXED_MODEL_RETRY_COUNT;
         let mut candidate_final_error: Option<String> = None;
         for attempt in 0..=max_failure_retries {
-            eprintln!(
-                "[聊天耗时] stage=model_request.start, elapsed_ms={}, candidate_api_id={}, attempt={}",
-                chat_started_at.elapsed().as_millis(),
+            let request_start_stage = format!(
+                "model_request.start[candidate_api_id={},attempt={}]",
                 candidate_selected_api.id,
                 attempt + 1
             );
-            log_run_stage("model_request.start");
+            log_run_stage(&request_start_stage);
             let reply_result = call_model_openai_style(
                 &candidate_resolved_api,
                 &app_config,
@@ -1652,13 +1715,12 @@ async fn send_chat_message_inner(
                 &chat_session_key,
             )
             .await;
-            eprintln!(
-                "[聊天耗时] stage=model_request.finish, elapsed_ms={}, candidate_api_id={}, attempt={}",
-                chat_started_at.elapsed().as_millis(),
+            let request_finish_stage = format!(
+                "model_request.finish[candidate_api_id={},attempt={}]",
                 candidate_selected_api.id,
                 attempt + 1
             );
-            log_run_stage("model_request.finish");
+            log_run_stage(&request_finish_stage);
 
             let (reason_text, final_error_text) = match reply_result {
                 Ok(reply) => {
@@ -1953,6 +2015,7 @@ async fn send_chat_message_inner(
 
     let result = futures_util::future::Abortable::new(run, abort_registration).await;
     log_chat_stage("send_chat_message_inner.finish");
+    flush_chat_timeline("send_chat_message_inner.finish");
     {
         let mut inflight = state
             .inflight_chat_abort_handles

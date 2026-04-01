@@ -45,12 +45,6 @@ impl ReadFileMcpServer {
     ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
         let absolute_path = args.absolute_path.clone();
         let started = std::time::Instant::now();
-        eprintln!(
-            "[MCP read_file] 开始，任务=read_file，session_id={}，api_config_id={}，absolute_path={}",
-            self.session_id,
-            self.api_config_id,
-            absolute_path
-        );
         let request = ReadFileRequest {
             absolute_path: args.absolute_path,
             offset: args.offset,
@@ -82,14 +76,6 @@ impl ReadFileMcpServer {
                 })),
             )
         })?;
-        let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        eprintln!(
-            "[MCP read_file] 完成，任务=read_file，session_id={}，api_config_id={}，absolute_path={}，elapsed_ms={}",
-            self.session_id,
-            self.api_config_id,
-            absolute_path,
-            elapsed_ms
-        );
         let text = serde_json::to_string(&result).map_err(|err| {
             let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             rmcp::ErrorData::internal_error(
@@ -138,11 +124,6 @@ pub fn run_read_file_mcp_server() -> Result<(), String> {
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "Missing --mcp-read-file-api-config-id for MCP read_file server".to_string())?;
     let app_state = AppState::new()?;
-    eprintln!(
-        "[MCP] 开始，任务=read_file_mcp_server，session_id={}，api_config_id={}",
-        session_id,
-        api_config_id
-    );
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
