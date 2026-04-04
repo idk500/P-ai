@@ -1483,9 +1483,42 @@ fn build_system_tools_rule_block(
     sections.push(
         "4. exec\n\
          何时必须用：当必须通过命令、程序或脚本来搜索文件、读取信息、检查环境、运行验证或执行脚本时，使用 exec。很多 skill 会要求执行脚本。\n\
-         何时不要用：一般情况下禁止使用 exec 修改文件；文件修改应优先使用正常编辑能力，而不是把 exec 当成文件编辑器。\n\
-         如何使用：优先把 exec 用于搜索、读取、检查、运行和验证；执行前先判断是否存在更低风险替代，并尽量缩小命令影响范围。\n\
+         何时不要用：一般情况下禁止使用 exec 创建、覆盖或改写文件；文件创建与修改应优先使用正常编辑能力，而不是把 exec 当成文件编辑器。\n\
+         如何使用：优先把 exec 用于搜索、读取、检查、运行和验证；执行前先判断是否存在更低风险替代，并尽量缩小命令影响范围。若任务是新增或修改文件，应先使用 apply_patch；若 apply_patch 失败，应先修正补丁格式或路径问题重试，而不是改用 exec 通过 cat、echo、重定向、heredoc 等方式写文件。若 exec 报告工作区、路径授权或 shell_switch_workspace 相关错误，应先解决工作区与授权前提，再继续当前工具链，不要在 exec 与 apply_patch 之间来回试错。\n\
          为什么：exec 负责命令执行与脚本运行，但副作用风险更高，因此默认不承担常规文件编辑职责。"
+            .to_string(),
+    );
+    sections.push(
+        "5. apply_patch\n\
+         何时必须用：当需要新增文件、删除文件、修改文件或重命名文件时，默认使用 apply_patch。\n\
+         核心规则：apply_patch 只接受严格补丁语法；新增文件时每一行正文都必须以前缀 `+` 开头；修改文件时只能在 `*** Update File:` 下写带 `+`、`-`、空格前缀的变更行；不要把普通正文直接塞进补丁。\n\
+         路径规则：若当前工具环境要求绝对路径，就传绝对路径；若工具报路径或工作区错误，先修正路径与工作区，再继续用 apply_patch，不要改用 exec 写文件。\n\
+         正确示例一：新增代码文件\n\
+         ```\n\
+         *** Begin Patch\n\
+         *** Add File: E:\\project\\src\\utils\\math.ts\n\
+         +export function add(a: number, b: number): number {\n\
+         +  return a + b;\n\
+         +}\n\
+         *** End Patch\n\
+         ```\n\
+         正确示例二：修改代码文件\n\
+         ```\n\
+         *** Begin Patch\n\
+         *** Update File: E:\\project\\src\\utils\\math.ts\n\
+         @@\n\
+         -export function add(a: number, b: number): number {\n\
+         -  return a + b;\n\
+         -}\n\
+         +export function add(a: number, b: number): number {\n\
+         +  const left = Number(a);\n\
+         +  const right = Number(b);\n\
+         +  return left + right;\n\
+         +}\n\
+         *** End Patch\n\
+         ```\n\
+         错误示例：新增文件时直接写正文，未给每一行加 `+`；或 apply_patch 失败后改用 exec 执行 `cat > file <<EOF`、`echo text > file` 之类命令写文件。\n\
+         失败后的正确处理：若报 `Add File 仅允许 + 行`，说明新增文件补丁格式错误，应修正补丁后重试；若报路径、工作区或授权错误，应先修正这些前提，再继续 apply_patch。"
             .to_string(),
     );
 
