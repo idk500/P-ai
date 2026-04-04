@@ -71,15 +71,15 @@ jobs:
       - name: Validate signing secrets early
         shell: pwsh
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          CHECK_TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          CHECK_TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CHECK_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          $privateKey = "$env:TAURI_SIGNING_PRIVATE_KEY".Trim()
-          $privateKeyPassword = "$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
-          $publicKey = "$env:TAURI_UPDATER_PUBLIC_KEY".Trim()
+          $privateKey = "$env:CHECK_TAURI_SIGNING_PRIVATE_KEY".Trim()
+          $privateKeyPassword = "$env:CHECK_TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+          $publicKey = "$env:CHECK_TAURI_UPDATER_PUBLIC_KEY".Trim()
           $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           $configPubkey = "$($config.plugins.updater.pubkey)".Trim()
 
@@ -103,10 +103,12 @@ jobs:
           }
 
           $signProbePath = Join-Path $env:RUNNER_TEMP "sign-probe.txt"
+          $privateKeyPath = Join-Path $env:RUNNER_TEMP "signing-private-key.txt"
           Set-Content -LiteralPath $signProbePath -Value "sign-probe" -Encoding ascii -NoNewline
+          Set-Content -LiteralPath $privateKeyPath -Value $privateKey -NoNewline
 
           try {
-            pnpm tauri signer sign -f $signProbePath | Out-Null
+            pnpm tauri signer sign -f $signProbePath --private-key-path $privateKeyPath --password $privateKeyPassword | Out-Null
             if ($LASTEXITCODE -ne 0) {
               throw "pnpm tauri signer sign 退出码异常：$LASTEXITCODE"
             }
@@ -115,6 +117,7 @@ jobs:
             throw "签名预检失败，请检查私钥、密码、公钥是否匹配。"
           } finally {
             Remove-Item -LiteralPath $signProbePath -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $privateKeyPath -ErrorAction SilentlyContinue
           }
 
       - name: Build Tauri app
