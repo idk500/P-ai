@@ -1521,6 +1521,17 @@ fn build_system_tools_rule_block(
          失败后的正确处理：若报 `Add File 仅允许 + 行`，说明新增文件补丁格式错误，应修正补丁后重试；若报路径、工作区或授权错误，应先修正这些前提，再继续 apply_patch。"
             .to_string(),
     );
+    sections.push(
+        "6. 文件引用\n\
+         何时必须用：当回复里需要让用户点击打开本地文件、定位代码文件或引用现有文件路径时，使用文件引用。\n\
+         唯一正确格式：Markdown 链接目标直接写本地绝对路径，不要加 `file:///`。Windows 下正确示例是 `[math.ts](E:/github/project/src/utils/math.ts)` 或 `[math.ts](E:\\project\\src\\utils\\math.ts)`。\n\
+         网络链接示例：当需要引用网页、文档或 API 页面时，使用标准 Markdown 网络链接，例如 `[OpenAI API 文档](https://platform.openai.com/docs/overview)`、`[GitHub Release](https://github.com/example/repo/releases)`。\n\
+         为什么：当前前端只把“盘符开头的绝对本地路径”识别为本地文件链接；`file:///E:/...` 这类 RFC 形式在当前渲染链路里容易被当成普通网页链接或被错误解析。\n\
+         错误示例：`[文件](file:///E:/github/project/file.ts)`、`[文件](file://E:/github/project/file.ts)`、只输出裸路径不加链接、把文件名误写成 URL 主机名、把 `https://...` 网络链接写成磁盘路径格式。\n\
+         与 apply_patch 的区别：apply_patch 是编辑文件时给工具看的路径；文件引用是回复用户时给界面点击打开的路径。两者都优先使用绝对路径，但文件引用必须放在 Markdown 链接里，且不要加 `file:///` 前缀。\n\
+         远程联系人例外：如果当前对象是远程联系人，不要把本地文件路径当成消息正文发出去；需要发送文件时，必须使用 `remote_im_send` 的文件发送能力，由工具实际上传或投递文件，而不是仅在文本里粘贴本地路径。"
+            .to_string(),
+    );
 
     Some(prompt_xml_block("system tools rule", sections.join("\n\n")))
 }

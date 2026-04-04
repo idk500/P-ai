@@ -71,23 +71,19 @@ jobs:
       - name: Validate signing secrets early
         shell: pwsh
         env:
-          CHECK_TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          CHECK_TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          CHECK_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          $privateKey = "$env:CHECK_TAURI_SIGNING_PRIVATE_KEY".Trim()
-          $privateKeyPassword = "$env:CHECK_TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
-          $publicKey = "$env:CHECK_TAURI_UPDATER_PUBLIC_KEY".Trim()
+          $privateKey = "$env:TAURI_SIGNING_PRIVATE_KEY".Trim()
+          $publicKey = "$env:TAURI_UPDATER_PUBLIC_KEY".Trim()
           $config = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
           $configPubkey = "$($config.plugins.updater.pubkey)".Trim()
 
           if ([string]::IsNullOrWhiteSpace($privateKey)) {
             throw "缺少 TAURI_SIGNING_PRIVATE_KEY secret。"
-          }
-          if ([string]::IsNullOrWhiteSpace($privateKeyPassword)) {
-            throw "缺少 TAURI_SIGNING_PRIVATE_KEY_PASSWORD secret。"
           }
           if ([string]::IsNullOrWhiteSpace($publicKey)) {
             throw "缺少 TAURI_UPDATER_PUBLIC_KEY secret。"
@@ -103,12 +99,10 @@ jobs:
           }
 
           $signProbePath = Join-Path $env:RUNNER_TEMP "sign-probe.txt"
-          $privateKeyPath = Join-Path $env:RUNNER_TEMP "signing-private-key.txt"
           Set-Content -LiteralPath $signProbePath -Value "sign-probe" -Encoding ascii -NoNewline
-          Set-Content -LiteralPath $privateKeyPath -Value $privateKey -NoNewline
 
           try {
-            pnpm tauri signer sign -f $signProbePath --private-key-path $privateKeyPath --password $privateKeyPassword | Out-Null
+            pnpm exec tauri signer sign $signProbePath | Out-Null
             if ($LASTEXITCODE -ne 0) {
               throw "pnpm tauri signer sign 退出码异常：$LASTEXITCODE"
             }
@@ -117,7 +111,6 @@ jobs:
             throw "签名预检失败，请检查私钥、密码、公钥是否匹配。"
           } finally {
             Remove-Item -LiteralPath $signProbePath -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $privateKeyPath -ErrorAction SilentlyContinue
           }
 
       - name: Build Tauri app
@@ -130,8 +123,8 @@ jobs:
       - name: Build portable package and manifest
         shell: pwsh
         env:
-          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $packageVersion = $env:PACKAGE_VERSION
           $tagName = "v$packageVersion"
@@ -157,7 +150,7 @@ jobs:
           }
           Compress-Archive -Path (Join-Path $portableWorkDir "*") -DestinationPath $portableZipPath -Force
 
-          $signature = (pnpm tauri signer sign -f $portableZipPath).Trim()
+          $signature = (pnpm exec tauri signer sign $portableZipPath).Trim()
           if ([string]::IsNullOrWhiteSpace($signature)) {
             throw "Portable signature is empty"
           }
