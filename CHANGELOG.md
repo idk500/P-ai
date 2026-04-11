@@ -1,5 +1,14 @@
 # 变更日志
 
+## 更新：非主会话归档/抛弃时标记关联任务为"会话丢失"
+
+- 修复（task-session-lost-cleanup）：非主会话被归档或抛弃时，绑定到该会话的 active 任务无法继续执行但仍保持 active 状态
+  - 新增 `mark_tasks_as_session_lost` 辅助函数，查找绑定到指定 conversation_id 的 active 任务并标记为 `failed_completed`，`completion_conclusion` 设为"会话丢失"
+  - 在 `run_archive_pipeline_inner` 的四个删除/归档路径中，对非主会话调用任务标记
+  - 在 `delete_unarchived_conversation` 中，对非主会话调用任务标记
+  - 仅对非主会话标记，主会话归档/抛弃后会自动创建新会话，任务可以迁移
+  - 标记操作容错处理，查询或标记失败只打印日志不阻断归档/删除流程
+
 ## 发布：v0.9.5
 
 - 发布（release-0.9.5）：同步版本号并纳入本轮标题栏环形进度条、会话标题合并显示与督工按钮图标优化

@@ -2313,6 +2313,9 @@ fn delete_unarchived_conversation(
         return Err("Unarchived conversation not found.".to_string());
     }
     let _ = normalize_main_conversation_marker(&mut data, "");
+    if !deleted_is_main {
+        mark_tasks_as_session_lost(&state.data_path, conversation_id);
+    }
     if deleted_is_main {
         let main_api_config_id = assistant_department(&app_config)
             .map(department_primary_api_config_id)

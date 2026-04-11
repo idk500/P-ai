@@ -1,3 +1,34 @@
+fn mark_tasks_as_session_lost(data_path: &PathBuf, conversation_id: &str) {
+    let Ok(tasks) = task_store_list_task_records(data_path) else {
+        eprintln!(
+            "[TASK-CLEANUP] 查询任务列表失败: conversation_id={}",
+            conversation_id
+        );
+        return;
+    };
+    for task in &tasks {
+        if task.completion_state != TASK_STATE_ACTIVE {
+            continue;
+        }
+        if task.conversation_id.as_deref() != Some(conversation_id) {
+            continue;
+        }
+        if let Err(err) = task_store_complete_task(
+            data_path,
+            &TaskCompleteInput {
+                task_id: task.task_id.clone(),
+                completion_state: TASK_STATE_FAILED_COMPLETED.to_string(),
+                completion_conclusion: "会话丢失".to_string(),
+            },
+        ) {
+            eprintln!(
+                "[TASK-CLEANUP] 标记任务失败: task_id={}, conversation_id={}, error={}",
+                task.task_id, conversation_id, err
+            );
+        }
+    }
+}
+
 fn upsert_memories_into_store_with_ids(
     data_path: &PathBuf,
     drafts: &[ArchiveMemoryDraft],
@@ -1771,7 +1802,19 @@ async fn run_archive_pipeline_inner(
     started_at: std::time::Instant,
     trace_id: &str,
 ) -> Result<ForceArchiveResult, String> {
+    let is_main_conversation = {
+        let _guard = state
+            .conversation_lock
+            .lock()
+            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
+        let data = state_read_app_data_cached(&state)?;
+        data.main_conversation_id.as_deref().map(str::trim) == Some(source.id.as_str())
+    };
+
     if source.messages.is_empty() {
+        if !is_main_conversation {
+            mark_tasks_as_session_lost(&state.data_path, &source.id);
+        }
         let active_conversation_id =
             delete_main_conversation_and_activate_latest(state, selected_api, source)?;
         emit_deleted_history_flushed_event(
@@ -1795,6 +1838,9 @@ async fn run_archive_pipeline_inner(
     }
 
     if !archive_pipeline_has_assistant_reply(source) {
+        if !is_main_conversation {
+            mark_tasks_as_session_lost(&state.data_path, &source.id);
+        }
         let active_conversation_id =
             delete_main_conversation_and_activate_latest(state, selected_api, source)?;
         emit_deleted_history_flushed_event(
@@ -1823,6 +1869,9 @@ async fn run_archive_pipeline_inner(
 
     let message_count = archive_pipeline_message_count_for_delete(source);
     if message_count <= SHORT_CONVERSATION_DELETE_THRESHOLD {
+        if !is_main_conversation {
+            mark_tasks_as_session_lost(&state.data_path, &source.id);
+        }
         let active_conversation_id =
             delete_main_conversation_and_activate_latest(state, selected_api, source)?;
         emit_deleted_history_flushed_event(
@@ -1912,6 +1961,9 @@ async fn run_archive_pipeline_inner(
         .ok_or_else(|| "归档前会话已变化，请重试归档。".to_string())?;
     let archive_id = archive_conversation_now(&mut data, &source.id, archive_reason, &summary_draft.summary)
         .ok_or_else(|| "活动对话已变化，请重试归档。".to_string())?;
+    if !is_main_conversation {
+        mark_tasks_as_session_lost(&state.data_path, &source.id);
+    }
     let active_idx = ensure_active_foreground_conversation_index_atomic(
         &mut data,
         &state.data_path,
