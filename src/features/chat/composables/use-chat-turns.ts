@@ -97,6 +97,7 @@ export function useChatMessageBlocks(options: UseChatMessageBlocksOptions) {
       || !!baseBlock.taskTrigger
       || !!baseBlock.reasoningStandard
       || !!baseBlock.reasoningInline
+      || baseBlock.toolCallCount > 0
     ) {
       blocks.push(baseBlock);
     }

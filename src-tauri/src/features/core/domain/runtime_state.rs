@@ -22,6 +22,8 @@ struct AppState {
     last_panic_snapshot: Arc<Mutex<Option<String>>>,
     inflight_chat_abort_handles: Arc<Mutex<std::collections::HashMap<String, AbortHandle>>>,
     inflight_tool_abort_handles: Arc<Mutex<std::collections::HashMap<String, AbortHandle>>>,
+    inflight_completed_tool_history:
+        Arc<Mutex<std::collections::HashMap<String, Vec<Value>>>>,
     terminal_session_roots: Arc<Mutex<std::collections::HashMap<String, String>>>,
     terminal_live_sessions: Arc<
         tokio::sync::Mutex<std::collections::HashMap<String, TerminalLiveShellSessionHandle>>,
@@ -231,6 +233,8 @@ impl AppState {
             last_panic_snapshot: Arc::new(Mutex::new(None)),
             inflight_chat_abort_handles: Arc::new(Mutex::new(std::collections::HashMap::new())),
             inflight_tool_abort_handles: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            inflight_completed_tool_history:
+                Arc::new(Mutex::new(std::collections::HashMap::new())),
             terminal_session_roots: Arc::new(Mutex::new(std::collections::HashMap::new())),
             terminal_live_sessions: Arc::new(tokio::sync::Mutex::new(
                 std::collections::HashMap::new(),

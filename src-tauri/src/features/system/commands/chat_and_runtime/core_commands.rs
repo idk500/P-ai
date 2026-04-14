@@ -343,6 +343,7 @@ async fn stop_chat_message(
     let partial_assistant_text = input.partial_assistant_text.trim().to_string();
     let partial_reasoning_standard = input.partial_reasoning_standard.trim().to_string();
     let partial_reasoning_inline = input.partial_reasoning_inline.trim().to_string();
+    let completed_tool_history = inflight_completed_tool_history(state.inner(), &chat_key)?;
     let build_stop_result =
         |persisted: bool,
          conversation_id: Option<String>,
@@ -360,8 +361,10 @@ async fn stop_chat_message(
         };
     let should_persist = !partial_assistant_text.is_empty()
         || !partial_reasoning_standard.is_empty()
-        || !partial_reasoning_inline.is_empty();
+        || !partial_reasoning_inline.is_empty()
+        || !completed_tool_history.is_empty();
     if !should_persist {
+        clear_inflight_completed_tool_history(state.inner(), &chat_key)?;
         return Ok(build_stop_result(false, None, None));
     }
 
@@ -431,6 +434,7 @@ async fn stop_chat_message(
     {
         let conversation_id = conversation.id.clone();
         let assistant_message = conversation.messages.last().cloned();
+        clear_inflight_completed_tool_history(state.inner(), &chat_key)?;
         return Ok(build_stop_result(false, Some(conversation_id), assistant_message));
     }
 
@@ -455,7 +459,11 @@ async fn stop_chat_message(
         }],
         extra_text_blocks: Vec::new(),
         provider_meta,
-        tool_call: None,
+        tool_call: if completed_tool_history.is_empty() {
+            None
+        } else {
+            Some(completed_tool_history)
+        },
         mcp_call: None,
     };
     conversation.messages.push(assistant_message.clone());
@@ -470,6 +478,7 @@ async fn stop_chat_message(
     } else {
         state_write_app_data_cached(&state, &data)?;
     }
+    clear_inflight_completed_tool_history(state.inner(), &chat_key)?;
 
     Ok(build_stop_result(true, Some(conversation_id), Some(assistant_message)))
 }
