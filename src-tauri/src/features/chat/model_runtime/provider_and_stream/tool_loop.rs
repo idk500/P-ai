@@ -312,6 +312,22 @@ fn tool_history_without_organize_context(events: &[Value]) -> Vec<Value> {
     filtered
 }
 
+fn sync_completed_tool_history_cache(
+    state: Option<&AppState>,
+    chat_session_key: &str,
+    events: &[Value],
+) {
+    let Some(state) = state else {
+        return;
+    };
+    if let Err(err) = replace_inflight_completed_tool_history(state, chat_session_key, events) {
+        eprintln!(
+            "[聊天] 同步已完成工具历史缓存失败 (session={}): {}",
+            chat_session_key, err
+        );
+    }
+}
+
 async fn call_tool_with_user_abort<F, T, E>(
     app_state: Option<&AppState>,
     chat_session_key: &str,
@@ -864,6 +880,11 @@ async fn run_genai_tool_loop(
                 "tool_call_id": tool_call_id,
                 "content": history_content
             }));
+            sync_completed_tool_history_cache(
+                tool_abort_state,
+                chat_session_key,
+                &tool_history_events,
+            );
 
             if organize_context_succeeded(&tool_name, &tool_result_text) {
                 return Ok(ModelReply {
@@ -926,6 +947,11 @@ async fn run_genai_tool_loop(
                     "screenshotArtifactMaxRetained": SCREENSHOT_ARTIFACT_MAX_ITEMS,
                     "screenshotImageCount": cached.images.len()
                 }));
+                sync_completed_tool_history_cache(
+                    tool_abort_state,
+                    chat_session_key,
+                    &tool_history_events,
+                );
             }
             if stop_after_remote_im_done_in_turn {
                 break;

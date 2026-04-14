@@ -23,6 +23,48 @@ fn register_inflight_tool_abort_handle(
     Ok(())
 }
 
+fn reset_inflight_completed_tool_history(state: &AppState, chat_key: &str) -> Result<(), String> {
+    let mut inflight = state
+        .inflight_completed_tool_history
+        .lock()
+        .map_err(|_| "Failed to lock inflight completed tool history".to_string())?;
+    inflight.insert(chat_key.to_string(), Vec::new());
+    Ok(())
+}
+
+fn replace_inflight_completed_tool_history(
+    state: &AppState,
+    chat_key: &str,
+    events: &[Value],
+) -> Result<(), String> {
+    let mut inflight = state
+        .inflight_completed_tool_history
+        .lock()
+        .map_err(|_| "Failed to lock inflight completed tool history".to_string())?;
+    inflight.insert(chat_key.to_string(), events.to_vec());
+    Ok(())
+}
+
+fn inflight_completed_tool_history(
+    state: &AppState,
+    chat_key: &str,
+) -> Result<Vec<Value>, String> {
+    let inflight = state
+        .inflight_completed_tool_history
+        .lock()
+        .map_err(|_| "Failed to lock inflight completed tool history".to_string())?;
+    Ok(inflight.get(chat_key).cloned().unwrap_or_default())
+}
+
+fn clear_inflight_completed_tool_history(state: &AppState, chat_key: &str) -> Result<(), String> {
+    let mut inflight = state
+        .inflight_completed_tool_history
+        .lock()
+        .map_err(|_| "Failed to lock inflight completed tool history".to_string())?;
+    inflight.remove(chat_key);
+    Ok(())
+}
+
 fn clear_inflight_tool_abort_handle(state: &AppState, chat_key: &str) -> Result<(), String> {
     let mut inflight = state
         .inflight_tool_abort_handles

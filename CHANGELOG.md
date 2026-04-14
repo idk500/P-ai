@@ -1,5 +1,15 @@
 # 变更日志
 
+## 更新：流式打断保留已完成工具历史
+
+- 修复（stream-stop-preserve-completed-tool-history）：聊天流式阶段被 stop 打断时，已完成工具不再随 draft 一起消失，而会写入最终 assistant 消息
+  - 后端新增 inflight completed tool history 运行时缓存，按会话记录当前轮次已经完成并可持久化的工具历史
+  - 工具循环在工具结果落入 `tool_history_events` 后立即同步缓存，stop 时只保留这些已完成事件，不记录仍在执行中的工具
+  - `stop_chat_message` 的持久化条件扩展为“部分文本 / reasoning / 已完成工具历史”三者任一存在即可落消息
+  - stop 生成的 assistant message 现在会带上已完成 `tool_call` 历史，前端沿用现有回填链路即可自然显示
+  - 正常完成链路结束后会清理运行时缓存；用户 stop 时保留缓存供 stop 持久化使用，避免已成立工具事实丢失
+  - 补充前端消息块生成条件：即使 assistant 文本为空，只要正式消息带有工具历史，也必须生成消息块并渲染工具时间线
+
 ## 更新：流式工具列表改为顺序状态展示
 
 - 调整（streaming-tool-sequence-status）：收紧聊天流式阶段的工具展示逻辑，改为按调用顺序追加，并只维护“前序 done / 当前 doing”的简化前端状态
