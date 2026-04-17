@@ -120,7 +120,7 @@ import { useI18n } from "vue-i18n";
 import type { ApiConfigItem, AppConfig, PersonaProfile } from "../../../../types/app";
 import { invokeTauri } from "../../../../services/tauri-api";
 
-type ConfigTab = "welcome" | "hotkey" | "api" | "tools" | "mcp" | "skill" | "persona" | "department" | "chatSettings" | "memory" | "task" | "logs" | "appearance" | "about";
+type ConfigTab = "welcome" | "hotkey" | "api" | "tools" | "mcp" | "skill" | "persona" | "department" | "chatSettings" | "memory" | "task" | "logs" | "appearance" | "migration" | "about";
 type WelcomeCardLevel = "required" | "strong" | "optional";
 type MemoryProviderBindings = {
   embeddingApiConfigId?: string;

@@ -45,6 +45,9 @@
           <a :class="{ 'active': props.configTab === 'appearance', 'menu-active': props.configTab === 'appearance', 'opacity-50 pointer-events-none': memorySyncLocked }" @click="requestTabChange('appearance')">{{ t("config.tabs.appearance") }}</a>
         </li>
         <li>
+          <a :class="{ 'active': props.configTab === 'migration', 'menu-active': props.configTab === 'migration', 'opacity-50 pointer-events-none': memorySyncLocked }" @click="requestTabChange('migration')">{{ t("config.tabs.migration") }}</a>
+        </li>
+        <li>
           <a :class="{ 'active': props.configTab === 'about', 'menu-active': props.configTab === 'about', 'opacity-50 pointer-events-none': memorySyncLocked }" @click="requestTabChange('about')">{{ t("config.tabs.about") }}</a>
         </li>
       </ul>
@@ -208,6 +211,10 @@
           @set-theme="$emit('setTheme', $event)"
         />
 
+        <MigrationTab
+          v-else-if="props.configTab === 'migration'"
+        />
+
         <AboutTab
           v-else-if="props.configTab === 'about'"
           :checking-update="checkingUpdate"
@@ -344,12 +351,13 @@ import MemoryTab from "./config-tabs/MemoryTab.vue";
 import TaskTab from "./config-tabs/TaskTab.vue";
 import LogTab from "./config-tabs/LogTab.vue";
 import AppearanceTab from "./config-tabs/AppearanceTab.vue";
+import MigrationTab from "./config-tabs/MigrationTab.vue";
 import AboutTab from "./config-tabs/AboutTab.vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invokeTauri } from "../../../services/tauri-api";
 import { toErrorMessage } from "../../../utils/error";
 
-type ConfigTab = "welcome" | "hotkey" | "api" | "tools" | "mcp" | "skill" | "persona" | "department" | "chatSettings" | "remoteIm" | "memory" | "task" | "logs" | "appearance" | "about";
+type ConfigTab = "welcome" | "hotkey" | "api" | "tools" | "mcp" | "skill" | "persona" | "department" | "chatSettings" | "remoteIm" | "memory" | "task" | "logs" | "appearance" | "migration" | "about";
 type AvatarTarget = { agentId: string };
 
 const props = defineProps<{

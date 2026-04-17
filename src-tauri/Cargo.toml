@@ -61,7 +61,7 @@ chrono = { version = "0.4", features = ["serde"] }
 undoc = "0.1.8"
 litchi = { git = "https://github.com/DevExzh/litchi.git", rev = "5a931961d58bf71c6bb5b7e82f450bda34349e3d" }
 walkdir = "2.5.0"
-zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
+zip = { version = "2.2.2", default-features = false, features = ["deflate", "aes-crypto"] }
 
 [features]
 default = ["custom-protocol"]

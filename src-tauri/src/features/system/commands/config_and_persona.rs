@@ -10,3 +10,6 @@ include!("config_and_persona/conversation_snapshot_api.rs");
 // ==================== 会话与归档列表 ====================
 include!("config_and_persona/unarchived_conversations.rs");
 
+// ==================== 配置迁移 ====================
+include!("config_and_persona/migration.rs");
+
