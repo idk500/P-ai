@@ -2,6 +2,7 @@
 
 ## 发布：v0.9.13
 
+- 修复（chat-tool-phase-stream-rebind）：聊天活动视图绑定升级为真实 Delta 通道；工具开始执行时，后端会发出 `stream-rebind-required` 事件，前端收到后立即为当前会话重建并重绑流式通道，后续 LLM 流式阶段优先走最新活动通道发送；同时补齐重绑链路的开始/完成/失败日志与投递失败告警，降低工具阶段后半程前端实时黑洞的概率
 - 发布（release-0.9.13）：同步前端 `package.json`、Tauri `tauri.conf.json` 与 Rust `Cargo.toml` / `Cargo.lock` 版本号到 `0.9.13`，用于触发本轮版本更新构建
 
 ## 发布：v0.9.12

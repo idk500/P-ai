@@ -9,6 +9,9 @@ import type { ChatMentionTarget, ChatMessage, PromptCommandPreset } from "../../
 export type AssistantDeltaEvent = {
   delta?: string;
   kind?: string;
+  requestId?: string;
+  phaseId?: string;
+  reason?: string;
   toolName?: string;
   toolStatus?: string;
   toolArgs?: string;
@@ -93,6 +96,7 @@ type UseChatFlowOptions = {
   }>;
   invokeBindActiveChatViewStream?: (input: {
     conversationId?: string;
+    onDelta: Channel<AssistantDeltaEvent>;
   }) => Promise<void>;
   onReloadMessages: () => Promise<void>;
   onHistoryFlushed?: (input: {
@@ -261,6 +265,9 @@ export function useChatFlow(options: UseChatFlowOptions) {
     return {
       delta: typeof m.delta === "string" ? m.delta : undefined,
       kind: typeof m.kind === "string" ? m.kind : undefined,
+      requestId: typeof m.requestId === "string" ? m.requestId : undefined,
+      phaseId: typeof m.phaseId === "string" ? m.phaseId : undefined,
+      reason: typeof m.reason === "string" ? m.reason : undefined,
       toolName: typeof m.toolName === "string" ? m.toolName : undefined,
       toolStatus: typeof m.toolStatus === "string" ? m.toolStatus : undefined,
       toolArgs: typeof m.toolArgs === "string" ? m.toolArgs : undefined,
@@ -1075,15 +1082,63 @@ export function useChatFlow(options: UseChatFlowOptions) {
   let boundConversationId = "";
   let boundConversationInitialized = false;
   let boundDisplayGeneration = 0;
+  let boundDeltaChannel: Channel<AssistantDeltaEvent> | null = null;
 
   async function bindActiveConversationStream(conversationId: string, force = false) {
     if (!options.invokeBindActiveChatViewStream) return;
     const id = String(conversationId || "").trim();
     if (!force && boundConversationInitialized && id === boundConversationId) return;
-    await options.invokeBindActiveChatViewStream({ conversationId: id || undefined });
+    const channel = new Channel<AssistantDeltaEvent>();
+    attachDeltaHandler(
+      channel,
+      "bound",
+      () => (round.phase === "streaming" ? round.gen : boundDisplayGeneration),
+      () => (round.phase === "streaming" ? round.gen : boundDisplayGeneration),
+    );
+    await options.invokeBindActiveChatViewStream({
+      conversationId: id || undefined,
+      onDelta: channel,
+    });
+    boundDeltaChannel = channel;
     boundConversationId = id;
     boundConversationInitialized = true;
     if (!id) boundDisplayGeneration = 0;
+  }
+
+  async function handleExternalStreamRebindRequired(payload: unknown) {
+    const raw = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+    const payloadConversationId = String(raw?.conversationId || "").trim();
+    const currentConversationId = String(options.getConversationId ? options.getConversationId() : "").trim();
+    if (!payloadConversationId || !currentConversationId || payloadConversationId !== currentConversationId) {
+      return;
+    }
+    const requestId = String(raw?.requestId || "").trim();
+    const phaseId = String(raw?.phaseId || "").trim();
+    const reason = String(raw?.reason || "").trim();
+    console.info("[聊天] 流式通道重绑 开始", {
+      conversationId: currentConversationId,
+      requestId,
+      phaseId,
+      reason,
+    });
+    try {
+      await bindActiveConversationStream(currentConversationId, true);
+      console.info("[聊天] 流式通道重绑 完成", {
+        conversationId: currentConversationId,
+        requestId,
+        phaseId,
+        reason,
+      });
+    } catch (error) {
+      console.error("[聊天] 流式通道重绑 失败", {
+        conversationId: currentConversationId,
+        requestId,
+        phaseId,
+        reason,
+        error,
+      });
+      throw error;
+    }
   }
 
   async function handleExternalHistoryFlushed(payload: unknown) {
@@ -1491,6 +1546,7 @@ export function useChatFlow(options: UseChatFlowOptions) {
     clearForegroundRoundState,
     freezeForegroundRoundState,
     bindActiveConversationStream,
+    handleExternalStreamRebindRequired,
     handleExternalHistoryFlushed,
     handleExternalRoundCompleted,
     handleExternalRoundFailed,

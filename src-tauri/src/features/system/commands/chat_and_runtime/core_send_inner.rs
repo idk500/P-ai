@@ -2040,6 +2040,13 @@ async fn send_chat_message_inner(
         } else {
             Some(ToolLoopAutoCompactionContext {
                 conversation_id: conversation.id.clone(),
+                request_id: input
+                    .runtime_context
+                    .as_ref()
+                    .and_then(|value| value.request_id.as_deref())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
                 prompt_mode,
                 agent: snapshot.current_agent.clone(),
                 agents: snapshot.agents.clone(),
@@ -2149,6 +2156,9 @@ async fn send_chat_message_inner(
                 let _ = on_delta.send(AssistantDeltaEvent {
                     delta: "".to_string(),
                     kind: Some("tool_status".to_string()),
+                    request_id: None,
+                    phase_id: None,
+                    reason: None,
                     tool_name: Some("archive".to_string()),
                     tool_status: Some("running".to_string()),
                     tool_args: None,
@@ -2182,6 +2192,9 @@ async fn send_chat_message_inner(
                         let _ = on_delta.send(AssistantDeltaEvent {
                             delta: "".to_string(),
                             kind: Some("tool_status".to_string()),
+                            request_id: None,
+                            phase_id: None,
+                            reason: None,
                             tool_name: Some("archive".to_string()),
                             tool_status: Some("done".to_string()),
                             tool_args: None,
@@ -2210,6 +2223,9 @@ async fn send_chat_message_inner(
                         let _ = on_delta.send(AssistantDeltaEvent {
                             delta: "".to_string(),
                             kind: Some("tool_status".to_string()),
+                            request_id: None,
+                            phase_id: None,
+                            reason: None,
                             tool_name: Some("archive".to_string()),
                             tool_status: Some("failed".to_string()),
                             tool_args: None,
@@ -2383,6 +2399,9 @@ async fn send_chat_message_inner(
                 let _ = on_delta.send(AssistantDeltaEvent {
                     delta: "".to_string(),
                     kind: Some("tool_status".to_string()),
+                    request_id: None,
+                    phase_id: None,
+                    reason: None,
                     tool_name: None,
                     tool_status: Some("running".to_string()),
                     tool_args: None,
@@ -2408,6 +2427,9 @@ async fn send_chat_message_inner(
             let _ = on_delta.send(AssistantDeltaEvent {
                 delta: "".to_string(),
                 kind: Some("tool_status".to_string()),
+                request_id: None,
+                phase_id: None,
+                reason: None,
                 tool_name: None,
                 tool_status: Some("running".to_string()),
                 tool_args: None,

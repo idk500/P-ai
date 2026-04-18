@@ -126,6 +126,7 @@ const CHAT_HISTORY_FLUSHED_EVENT: &str = "easy-call:history-flushed";
 const CHAT_ROUND_COMPLETED_EVENT: &str = "easy-call:round-completed";
 const CHAT_ROUND_FAILED_EVENT: &str = "easy-call:round-failed";
 const CHAT_ASSISTANT_DELTA_EVENT: &str = "easy-call:assistant-delta";
+const CHAT_STREAM_REBIND_REQUIRED_EVENT: &str = "easy-call:stream-rebind-required";
 const CHAT_CONVERSATION_MESSAGE_APPENDED_EVENT: &str = "easy-call:conversation-message-appended";
 const CHAT_CONVERSATION_OVERVIEW_UPDATED_EVENT: &str = "easy-call:conversation-overview-updated";
 const CHAT_CONCURRENCY_LIMIT: usize = 8;
@@ -356,6 +357,7 @@ pub(crate) fn set_active_chat_view_stream_binding(
     state: &AppState,
     window_label: &str,
     conversation_id: Option<&str>,
+    on_delta: tauri::ipc::Channel<AssistantDeltaEvent>,
 ) -> Result<(), String> {
     let mut bindings = state
         .active_chat_view_bindings
@@ -374,12 +376,129 @@ pub(crate) fn set_active_chat_view_stream_binding(
             trimmed_window_label.to_string(),
             ActiveChatViewBinding {
                 conversation_id,
+                delta_channel: on_delta,
             },
         );
     } else {
         bindings.remove(trimmed_window_label);
     }
     Ok(())
+}
+
+fn collect_active_chat_view_delta_channels(
+    state: &AppState,
+    conversation_id: &str,
+) -> Result<Vec<(String, tauri::ipc::Channel<AssistantDeltaEvent>)>, String> {
+    let bindings = state
+        .active_chat_view_bindings
+        .lock()
+        .map_err(|_| "Failed to lock active chat view bindings".to_string())?;
+    let conversation_id = conversation_id.trim();
+
+    let exact = bindings
+        .iter()
+        .filter_map(|(window_label, binding)| {
+            if binding.conversation_id != conversation_id {
+                return None;
+            }
+            Some((window_label.clone(), binding.delta_channel.clone()))
+        })
+        .collect::<Vec<_>>();
+    if !exact.is_empty() {
+        return Ok(exact);
+    }
+
+    Ok(bindings
+        .iter()
+        .filter_map(|(window_label, binding)| {
+            if binding.conversation_id != "*" {
+                return None;
+            }
+            Some((window_label.clone(), binding.delta_channel.clone()))
+        })
+        .collect::<Vec<_>>())
+}
+
+fn prune_failed_active_chat_view_bindings(state: &AppState, window_labels: &[String]) {
+    if window_labels.is_empty() {
+        return;
+    }
+    if let Ok(mut bindings) = state.active_chat_view_bindings.lock() {
+        for window_label in window_labels {
+            bindings.remove(window_label);
+        }
+    }
+}
+
+fn emit_assistant_delta_app_event(
+    state: &AppState,
+    conversation_id: &str,
+    event: &AssistantDeltaEvent,
+) {
+    let app_handle = match state.app_handle.lock() {
+        Ok(guard) => guard.as_ref().cloned(),
+        Err(_) => None,
+    };
+    let Some(app_handle) = app_handle else {
+        return;
+    };
+    let payload = serde_json::json!({
+        "conversationId": conversation_id,
+        "event": event,
+    });
+    let _ = app_handle.emit(CHAT_ASSISTANT_DELTA_EVENT, payload);
+}
+
+fn dispatch_assistant_delta_to_active_view(
+    state: &AppState,
+    conversation_id: &str,
+    event: &AssistantDeltaEvent,
+) {
+    let targets = collect_active_chat_view_delta_channels(state, conversation_id).unwrap_or_default();
+    if targets.is_empty() {
+        emit_assistant_delta_app_event(state, conversation_id, event);
+        return;
+    }
+
+    let mut delivered = false;
+    let mut failed_labels = Vec::<String>::new();
+    for (window_label, channel) in targets {
+        match channel.send(event.clone()) {
+            Ok(_) => {
+                delivered = true;
+            }
+            Err(_) => {
+                failed_labels.push(window_label);
+            }
+        }
+    }
+    prune_failed_active_chat_view_bindings(state, &failed_labels);
+    if !delivered {
+        emit_assistant_delta_app_event(state, conversation_id, event);
+    }
+}
+
+fn emit_stream_rebind_required_event(
+    state: &AppState,
+    conversation_id: &str,
+    request_id: Option<&str>,
+    phase_id: Option<&str>,
+    reason: &str,
+) {
+    let app_handle = match state.app_handle.lock() {
+        Ok(guard) => guard.as_ref().cloned(),
+        Err(_) => None,
+    };
+    let Some(app_handle) = app_handle else {
+        return;
+    };
+    let payload = serde_json::json!({
+        "conversationId": conversation_id,
+        "requestId": request_id.map(str::trim).filter(|value| !value.is_empty()),
+        "phaseId": phase_id.map(str::trim).filter(|value| !value.is_empty()),
+        "reason": reason.trim(),
+    });
+    let _ = app_handle.emit(CHAT_STREAM_REBIND_REQUIRED_EVENT, payload);
 }
 
 #[allow(dead_code)]
@@ -1246,10 +1365,7 @@ async fn activate_main_assistant(
     };
 
     // 使用 emit 作为远程激活轮次的流式主通道，避免前端窗口重绑定造成 channel 失联。
-    let app_handle = match state.app_handle.lock() {
-        Ok(guard) => guard.as_ref().cloned(),
-        Err(_) => None,
-    };
+    let state_for_delta = state.clone();
     let conversation_id_for_emit = conversation_id.to_string();
     let active_channel: tauri::ipc::Channel<AssistantDeltaEvent> =
         tauri::ipc::Channel::new(move |body| {
@@ -1261,12 +1377,22 @@ async fn activate_main_assistant(
                     serde_json::from_slice::<AssistantDeltaEvent>(&bytes).ok()
                 }
             };
-            if let (Some(app), Some(event)) = (app_handle.as_ref(), parsed_event) {
-                let payload = serde_json::json!({
-                    "conversationId": conversation_id_for_emit.clone(),
-                    "event": event,
-                });
-                let _ = app.emit(CHAT_ASSISTANT_DELTA_EVENT, payload);
+            if let Some(event) = parsed_event {
+                if event.kind.as_deref() == Some("stream_rebind_required") {
+                    emit_stream_rebind_required_event(
+                        &state_for_delta,
+                        &conversation_id_for_emit,
+                        event.request_id.as_deref(),
+                        event.phase_id.as_deref(),
+                        event.reason.as_deref().unwrap_or("tool_start"),
+                    );
+                } else {
+                    dispatch_assistant_delta_to_active_view(
+                        &state_for_delta,
+                        &conversation_id_for_emit,
+                        &event,
+                    );
+                }
             }
             Ok(())
         });

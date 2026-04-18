@@ -17,6 +17,9 @@ where
                     let _ = channel.send(AssistantDeltaEvent {
                         delta: text.content,
                         kind: None,
+                        request_id: None,
+                        phase_id: None,
+                        reason: None,
                         tool_name: None,
                         tool_status: None,
                         tool_args: None,
@@ -31,6 +34,9 @@ where
                         let _ = channel.send(AssistantDeltaEvent {
                             delta: reasoning.content,
                             kind: Some("reasoning_standard".to_string()),
+                            request_id: None,
+                            phase_id: None,
+                            reason: None,
                             tool_name: None,
                             tool_status: None,
                             tool_args: None,
@@ -55,6 +61,9 @@ where
                             let _ = channel.send(AssistantDeltaEvent {
                                 delta: joined,
                                 kind: None,
+                                request_id: None,
+                                phase_id: None,
+                                reason: None,
                                 tool_name: None,
                                 tool_status: None,
                                 tool_args: None,

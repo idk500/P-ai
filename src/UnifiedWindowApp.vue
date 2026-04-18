@@ -469,6 +469,7 @@ let chatHistoryFlushedUnlisten: UnlistenFn | null = null;
 let chatRoundCompletedUnlisten: UnlistenFn | null = null;
 let chatRoundFailedUnlisten: UnlistenFn | null = null;
 let chatAssistantDeltaUnlisten: UnlistenFn | null = null;
+let chatStreamRebindRequiredUnlisten: UnlistenFn | null = null;
 let chatConversationMessagesAfterSyncedUnlisten: UnlistenFn | null = null;
 let chatConversationMessageAppendedUnlisten: UnlistenFn | null = null;
 let chatConversationTodosUpdatedUnlisten: UnlistenFn | null = null;
@@ -2896,6 +2897,23 @@ onMounted(() => {
       .catch((error) => {
         console.error("[聊天追踪][助手增量] 监听器注册失败", error);
       });
+    void listen<unknown>("easy-call:stream-rebind-required", (event) => {
+      const conversationId = readConversationIdFromPayload(event.payload);
+      if (hasActiveForegroundConversation(conversationId)) {
+        void chatFlow.handleExternalStreamRebindRequired(event.payload).catch((error) => {
+          console.error("[聊天追踪][流重绑] 处理失败", {
+            conversationId,
+            error,
+          });
+        });
+      }
+    })
+      .then((unlisten) => {
+        chatStreamRebindRequiredUnlisten = unlisten;
+      })
+      .catch((error) => {
+        console.error("[聊天追踪][流重绑] 监听器注册失败", error);
+      });
     void listen<ConversationMessagesAfterSyncedPayload>("easy-call:conversation-messages-after-synced", (event) => {
       void applyConversationMessagesAfterSynced(event.payload);
     })
@@ -2942,6 +2960,10 @@ onBeforeUnmount(() => {
   if (chatAssistantDeltaUnlisten) {
     chatAssistantDeltaUnlisten();
     chatAssistantDeltaUnlisten = null;
+  }
+  if (chatStreamRebindRequiredUnlisten) {
+    chatStreamRebindRequiredUnlisten();
+    chatStreamRebindRequiredUnlisten = null;
   }
   if (chatConversationMessagesAfterSyncedUnlisten) {
     chatConversationMessagesAfterSyncedUnlisten();
@@ -3166,11 +3188,12 @@ const chatFlow = useChatFlow({
         partialReasoningInline,
       },
     }),
-  invokeBindActiveChatViewStream: ({ conversationId }) =>
+  invokeBindActiveChatViewStream: ({ conversationId, onDelta }) =>
     invokeTauri("bind_active_chat_view_stream", {
       input: {
         conversationId: conversationId || null,
       },
+      onDelta,
     }),
   onReloadMessages: () => reloadForegroundConversationMessages("chat_flow_reload"),
   onHistoryFlushed: async ({ conversationId, pendingMessages, activateAssistant }) => {

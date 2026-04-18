@@ -80,6 +80,7 @@ fn register_tool_repeat_attempt(
 #[derive(Debug, Clone)]
 struct ToolLoopAutoCompactionContext {
     conversation_id: String,
+    request_id: Option<String>,
     prompt_mode: PromptBuildMode,
     agent: AgentProfile,
     agents: Vec<AgentProfile>,
@@ -556,6 +557,9 @@ async fn maybe_apply_auto_compaction_before_tool_continue_genai(
     let _ = on_delta.send(AssistantDeltaEvent {
         delta: String::new(),
         kind: Some("tool_status".to_string()),
+        request_id: None,
+        phase_id: None,
+        reason: None,
         tool_name: Some("archive".to_string()),
         tool_status: Some("running".to_string()),
         tool_args: None,
@@ -579,6 +583,9 @@ async fn maybe_apply_auto_compaction_before_tool_continue_genai(
             let _ = on_delta.send(AssistantDeltaEvent {
                 delta: String::new(),
                 kind: Some("tool_status".to_string()),
+                request_id: None,
+                phase_id: None,
+                reason: None,
                 tool_name: Some("archive".to_string()),
                 tool_status: Some("failed".to_string()),
                 tool_args: None,
@@ -720,6 +727,9 @@ async fn run_genai_tool_loop(
                     let _ = on_delta.send(AssistantDeltaEvent {
                         delta: text.content.clone(),
                         kind: None,
+                        request_id: None,
+                        phase_id: None,
+                        reason: None,
                         tool_name: None,
                         tool_status: None,
                         tool_args: None,
@@ -734,6 +744,9 @@ async fn run_genai_tool_loop(
                         let _ = on_delta.send(AssistantDeltaEvent {
                             delta: reasoning.content,
                             kind: Some("reasoning_standard".to_string()),
+                            request_id: None,
+                            phase_id: None,
+                            reason: None,
                             tool_name: None,
                             tool_status: None,
                             tool_args: None,
@@ -762,6 +775,9 @@ async fn run_genai_tool_loop(
                             let _ = on_delta.send(AssistantDeltaEvent {
                                 delta: joined,
                                 kind: None,
+                                request_id: None,
+                                phase_id: None,
+                                reason: None,
                                 tool_name: None,
                                 tool_status: None,
                                 tool_args: None,
@@ -839,6 +855,11 @@ async fn run_genai_tool_loop(
             };
             let repeat_streak =
                 register_tool_repeat_attempt(&mut tool_repeat_guard, &tool_name, &tool_args);
+            send_stream_rebind_required_event(
+                on_delta,
+                auto_compaction_context.and_then(|ctx| ctx.request_id.as_deref()),
+                "tool_start",
+            );
             send_tool_status_event(
                 on_delta,
                 &tool_name,
@@ -1100,6 +1121,9 @@ async fn execute_genai_non_stream_round(
         let _ = on_delta.send(AssistantDeltaEvent {
             delta: turn_reasoning.clone(),
             kind: Some("reasoning_standard".to_string()),
+            request_id: None,
+            phase_id: None,
+            reason: None,
             tool_name: None,
             tool_status: None,
             tool_args: None,
@@ -1110,6 +1134,9 @@ async fn execute_genai_non_stream_round(
         let _ = on_delta.send(AssistantDeltaEvent {
             delta: turn_text.clone(),
             kind: None,
+            request_id: None,
+            phase_id: None,
+            reason: None,
             tool_name: None,
             tool_status: None,
             tool_args: None,
@@ -1269,6 +1296,11 @@ async fn run_genai_tool_loop_non_stream(
             };
             let repeat_streak =
                 register_tool_repeat_attempt(&mut tool_repeat_guard, &tool_name, &tool_args);
+            send_stream_rebind_required_event(
+                on_delta,
+                auto_compaction_context.and_then(|ctx| ctx.request_id.as_deref()),
+                "tool_start",
+            );
             send_tool_status_event(
                 on_delta,
                 &tool_name,
