@@ -356,7 +356,6 @@ pub(crate) fn set_active_chat_view_stream_binding(
     state: &AppState,
     window_label: &str,
     conversation_id: Option<&str>,
-    _on_delta: tauri::ipc::Channel<AssistantDeltaEvent>,
 ) -> Result<(), String> {
     let mut bindings = state
         .active_chat_view_bindings

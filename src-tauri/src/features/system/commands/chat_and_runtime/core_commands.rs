@@ -1271,7 +1271,6 @@ async fn bind_active_chat_view_stream(
     input: BindActiveChatViewStreamInput,
     state: State<'_, AppState>,
     window: tauri::Window,
-    on_delta: tauri::ipc::Channel<AssistantDeltaEvent>,
 ) -> Result<(), String> {
     let window_label = window.label().to_string();
     let conversation_id = input
@@ -1284,7 +1283,6 @@ async fn bind_active_chat_view_stream(
             state.inner(),
             &window_label,
             Some(conversation_id),
-            on_delta,
         )?;
         runtime_log_debug(format!(
             "[聊天] 已绑定活动聊天流: window={}, conversation_id={}",
@@ -1296,7 +1294,6 @@ async fn bind_active_chat_view_stream(
             state.inner(),
             &window_label,
             Some("*"),
-            on_delta,
         )?;
     }
     Ok(())

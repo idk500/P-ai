@@ -3166,12 +3166,11 @@ const chatFlow = useChatFlow({
         partialReasoningInline,
       },
     }),
-  invokeBindActiveChatViewStream: ({ conversationId, onDelta }) =>
+  invokeBindActiveChatViewStream: ({ conversationId }) =>
     invokeTauri("bind_active_chat_view_stream", {
       input: {
         conversationId: conversationId || null,
       },
-      onDelta,
     }),
   onReloadMessages: () => reloadForegroundConversationMessages("chat_flow_reload"),
   onHistoryFlushed: async ({ conversationId, pendingMessages, activateAssistant }) => {

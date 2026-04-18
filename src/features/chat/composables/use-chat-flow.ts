@@ -93,7 +93,6 @@ type UseChatFlowOptions = {
   }>;
   invokeBindActiveChatViewStream?: (input: {
     conversationId?: string;
-    onDelta: Channel<AssistantDeltaEvent>;
   }) => Promise<void>;
   onReloadMessages: () => Promise<void>;
   onHistoryFlushed?: (input: {
@@ -1073,26 +1072,15 @@ export function useChatFlow(options: UseChatFlowOptions) {
     };
   }
 
-  // =========================================================================
-  // Bound channel
-  // =========================================================================
-
   let boundConversationId = "";
   let boundConversationInitialized = false;
   let boundDisplayGeneration = 0;
-  const boundDeltaChannel = new Channel<AssistantDeltaEvent>();
-  attachDeltaHandler(
-    boundDeltaChannel,
-    "bound",
-    () => boundDisplayGeneration,
-    () => { boundDisplayGeneration = ++generation; return boundDisplayGeneration; },
-  );
 
   async function bindActiveConversationStream(conversationId: string, force = false) {
     if (!options.invokeBindActiveChatViewStream) return;
     const id = String(conversationId || "").trim();
     if (!force && boundConversationInitialized && id === boundConversationId) return;
-    await options.invokeBindActiveChatViewStream({ conversationId: id || undefined, onDelta: boundDeltaChannel });
+    await options.invokeBindActiveChatViewStream({ conversationId: id || undefined });
     boundConversationId = id;
     boundConversationInitialized = true;
     if (!id) boundDisplayGeneration = 0;
