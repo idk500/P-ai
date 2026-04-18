@@ -2,6 +2,7 @@
 
 ## 发布：v0.9.12
 
+- 修复（chat-session-binding-rebind）：聊天发送与 `@人格` 发送前新增会话绑定纠偏；当旧会话引用的部门已不存在时，直接提示“部门已经消失”；当部门仍在但原人格已不再属于该部门时，会自动切换到该部门当前可用人格并回写会话绑定，避免继续抛出 `Agent ... is not assigned to department ...`
 - 修复（mcp-tool-parameter-visibility）：MCP 配置页工具列表新增参数展示；后端会把工具 `input_schema` 一并返回前端，已部署工具现在可在名称下看到参数类型、必填标记、枚举/范围与示例内容，避免只能看见工具名和描述却无法判断调用入参
 - 功能（remote-im-proactive-state-machine）：远程联系人新增 `away/present + idle/busy` 主动应答状态机；入站消息先做联系人在场判定，支持忙时挂单次待办、`away -> present` 时插入轻量上下文边界、联系人消息游标与压缩边界持久化，以及基于 `patienceSeconds` 的耐心离场策略；同时补齐自动发送成功回写、关键后端测试与联系人配置页新字段
 - 修复（remote-im-round-finalize-fallback）：聊天调度在远程联系人轮次收尾失败时不再短路前端完成/失败通知；现在会优先完成 `emit_round_completed_event` / `emit_round_failed_event` 与 pending 事件收尾，再把状态机收尾异常记为警告日志，并统一修正远程 IM 运行时锁错误文案为中文
