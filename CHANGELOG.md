@@ -1,5 +1,11 @@
 # 变更日志
 
+## 更新：远程客服内置部门与默认办事指南
+
+- 修复（remote-customer-service-built-in-defaults）：废除内置“前台”部门，新增内置“远程客服”部门，并将远程联系人默认绑定部门改为 `remote-customer-service-department`；旧配置里已经存在的 `front-desk-department` 不做删除或迁移，仅取消其内置部门身份，避免误动用户历史数据
+- 修复（remote-customer-service-guide-and-restore）：远程客服的默认概述与默认办事指南改为独立模块维护，不再使用占位文案；前端系统部门操作统一收口为“还原”，现在点击“还原”会把 `远程客服 / 助理部门 / 副手` 恢复为各自内置默认名称、概述与办事指南
+- 修复（remote-im-send-guide-alignment）：`remote_im_send` 工具说明与参数说明对齐远程客服办事指南中的最终裁决口径，明确联系人消息必须通过 `list / send / no_reply` 完成决策，且 `no_reply` 的 7 秒等待与“不刷新上次成功回复时间”语义与默认指南保持一致
+
 ## 更新：远程联系人发送权限提示收口
 
 - 修复（remote-im-send-permission-guard-polish）：`remote_im_send` 的发送权限提示按联系人开关语义收口：当联系人禁止发信时，工具会明确告知模型“仍可继续处理任务，但任务结束后应立刻使用 `remote_im_send(action=no_reply, status=done)` 结束本轮”；当联系人禁止发送文件时，仅拦截非图片文件，图片不再算作“文件禁止”范围

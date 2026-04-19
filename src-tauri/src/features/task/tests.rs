@@ -52,7 +52,7 @@
         let mut side = build_conversation_record(
             api_id,
             agent_id,
-            FRONT_DESK_DEPARTMENT_ID,
+            REMOTE_CUSTOMER_SERVICE_DEPARTMENT_ID,
             "side",
             CONVERSATION_KIND_CHAT,
             None,
@@ -123,7 +123,7 @@
             patience_seconds: default_remote_im_contact_patience_seconds(),
             activation_cooldown_seconds: 0,
             route_mode: "dedicated_contact_conversation".to_string(),
-            bound_department_id: Some(FRONT_DESK_DEPARTMENT_ID.to_string()),
+            bound_department_id: Some(REMOTE_CUSTOMER_SERVICE_DEPARTMENT_ID.to_string()),
             bound_conversation_id: Some("missing-contact-conversation".to_string()),
             processing_mode: "continuous".to_string(),
             last_activated_at: None,

@@ -15,12 +15,13 @@
             </button>
             <button
               class="btn btn-sm btn-square"
-              :class="!selectedDepartment || isNonRemovableDepartment(selectedDepartment) || selectedDepartmentIsPrivateWorkspace ? 'text-base-content/30 bg-base-200 cursor-not-allowed' : 'bg-base-200'"
-              :title="t('config.department.remove')"
-              :disabled="!selectedDepartment || isNonRemovableDepartment(selectedDepartment) || selectedDepartmentIsPrivateWorkspace || savingConfig"
-              @click="removeSelectedDepartment"
+              :class="!selectedDepartment || selectedDepartmentIsPrivateWorkspace ? 'text-base-content/30 bg-base-200 cursor-not-allowed' : 'bg-base-200'"
+              :title="selectedDepartmentIsSystemBuiltIn ? t('common.reset') : t('config.department.remove')"
+              :disabled="!selectedDepartment || selectedDepartmentIsPrivateWorkspace || savingConfig"
+              @click="handleSelectedDepartmentPrimaryAction"
             >
-              <Trash2 class="h-3.5 w-3.5" />
+              <RotateCcw v-if="selectedDepartmentIsSystemBuiltIn" class="h-3.5 w-3.5" />
+              <Trash2 v-else class="h-3.5 w-3.5" />
             </button>
             <button
               class="btn btn-sm btn-square"
@@ -48,10 +49,10 @@
           </div>
           <button
             class="btn btn-sm btn-ghost"
-            :disabled="isNonRemovableDepartment(selectedDepartment) || selectedDepartmentIsPrivateWorkspace || savingConfig"
-            @click="removeSelectedDepartment"
+            :disabled="selectedDepartmentIsPrivateWorkspace || savingConfig"
+            @click="handleSelectedDepartmentPrimaryAction"
           >
-            {{ t("config.department.remove") }}
+            {{ selectedDepartmentIsSystemBuiltIn ? t("common.reset") : t("config.department.remove") }}
           </button>
         </div>
 
@@ -163,10 +164,11 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { Plus, Save, Trash2 } from "lucide-vue-next";
+import { Plus, RotateCcw, Save, Trash2 } from "lucide-vue-next";
 import { useI18n } from "vue-i18n";
 import type { ApiConfigItem, AppConfig, DepartmentConfig, PersonaProfile } from "../../../../types/app";
 import { validateDepartmentConfig } from "../../utils/department-validation";
+import { REMOTE_CUSTOMER_SERVICE_DEPARTMENT_DEFAULT } from "../../constants/department-defaults";
 
 const props = defineProps<{
   config: AppConfig;
@@ -184,12 +186,18 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const selectedDepartmentId = ref("assistant-department");
-const NON_REMOVABLE_DEPARTMENT_IDS = new Set(["assistant-department", "deputy-department"]);
+const SYSTEM_DEPARTMENT_IDS = new Set([
+  "assistant-department",
+  "deputy-department",
+  "remote-customer-service-department",
+]);
 
-function isNonRemovableDepartment(department: DepartmentConfig | null | undefined) {
+type DepartmentDefaultSeed = Pick<DepartmentConfig, "name" | "summary" | "guide">;
+
+function isSystemBuiltInDepartment(department: DepartmentConfig | null | undefined) {
   if (!department) return false;
   const id = String(department.id || "").trim();
-  return NON_REMOVABLE_DEPARTMENT_IDS.has(id) || !!department.isBuiltInAssistant;
+  return SYSTEM_DEPARTMENT_IDS.has(id) || !!department.isBuiltInAssistant;
 }
 
 const sortedDepartments = computed(() =>
@@ -203,6 +211,9 @@ const sortedDepartments = computed(() =>
 
 const selectedDepartment = computed(
   () => props.config.departments.find((item) => item.id === selectedDepartmentId.value) ?? sortedDepartments.value[0] ?? null,
+);
+const selectedDepartmentIsSystemBuiltIn = computed(
+  () => isSystemBuiltInDepartment(selectedDepartment.value),
 );
 const selectedDepartmentIsPrivateWorkspace = computed(
   () => selectedDepartment.value?.source === "private_workspace",
@@ -303,7 +314,7 @@ function addDepartment() {
 
 function nextDepartmentName() {
   const base = t("config.department.newName");
-  let index = props.config.departments.filter((item) => !isNonRemovableDepartment(item)).length + 1;
+  let index = props.config.departments.filter((item) => !isSystemBuiltInDepartment(item)).length + 1;
   while (true) {
     const name = `${base} ${index}`;
     const exists = props.config.departments.some(
@@ -316,11 +327,53 @@ function nextDepartmentName() {
 
 function removeSelectedDepartment() {
   const target = selectedDepartment.value;
-  if (!target || isNonRemovableDepartment(target)) return;
+  if (!target || isSystemBuiltInDepartment(target)) return;
   const idx = props.config.departments.findIndex((item) => item.id === target.id);
   if (idx >= 0) {
     props.config.departments.splice(idx, 1);
   }
+}
+
+function departmentDefaultSeed(department: DepartmentConfig | null | undefined): DepartmentDefaultSeed | null {
+  const id = String(department?.id || "").trim();
+  if (!id) return null;
+  if (id === "assistant-department" || department?.isBuiltInAssistant) {
+    return {
+      name: "助理部门",
+      summary: "负责直接与用户对话，承接主会话与统筹调度。",
+      guide: "你是助理部门，负责作为主负责人理解用户需求、决定是否需要委派、汇总结果并继续推进主对话。",
+    };
+  }
+  if (id === "deputy-department") {
+    return {
+      name: "副手",
+      summary: "负责快速执行上级派发的明确任务，强调最小行动与严格边界。",
+      guide: "你是副手部门。你的核心原则是严格不越权、不擅自扩展需求、不多想。收到上级派发的任务后，用最少的工具调用、最快的速度完成明确目标；若信息不足或任务超出指令边界，就直接说明缺口并等待主部门继续决策。",
+    };
+  }
+  if (id === "remote-customer-service-department") {
+    return REMOTE_CUSTOMER_SERVICE_DEPARTMENT_DEFAULT;
+  }
+  return null;
+}
+
+function restoreSelectedDepartment() {
+  const target = selectedDepartment.value;
+  const defaults = departmentDefaultSeed(target);
+  if (!target || !defaults) return;
+  target.name = defaults.name;
+  target.summary = defaults.summary;
+  target.guide = defaults.guide;
+  target.updatedAt = new Date().toISOString();
+}
+
+function handleSelectedDepartmentPrimaryAction() {
+  if (!selectedDepartment.value || selectedDepartmentIsPrivateWorkspace.value) return;
+  if (selectedDepartmentIsSystemBuiltIn.value) {
+    restoreSelectedDepartment();
+    return;
+  }
+  removeSelectedDepartment();
 }
 
 function selectDepartmentAssignee(agentId: string) {

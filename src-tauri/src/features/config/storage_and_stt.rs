@@ -786,7 +786,8 @@ fn normalize_departments(config: &mut AppConfig) {
         if api_config_ids.is_empty()
             && !raw.api_config_id.trim().is_empty()
             && !fallback_api_id.trim().is_empty()
-            && (raw.id == DEPUTY_DEPARTMENT_ID || raw.id == FRONT_DESK_DEPARTMENT_ID)
+            && (raw.id == DEPUTY_DEPARTMENT_ID
+                || raw.id == REMOTE_CUSTOMER_SERVICE_DEPARTMENT_ID)
         {
             api_config_ids.push(fallback_api_id.clone());
         }
@@ -824,8 +825,8 @@ fn normalize_departments(config: &mut AppConfig) {
         if item.name.is_empty() {
             item.name = if item.id == DEPUTY_DEPARTMENT_ID {
                 "副手".to_string()
-            } else if item.id == FRONT_DESK_DEPARTMENT_ID {
-                "前台".to_string()
+            } else if item.id == REMOTE_CUSTOMER_SERVICE_DEPARTMENT_ID {
+                "远程客服".to_string()
             } else if item.is_built_in_assistant {
                 default_assistant_department_name(&config.ui_language)
             } else {
@@ -847,8 +848,11 @@ fn normalize_departments(config: &mut AppConfig) {
     if !out.iter().any(|item| item.id == DEPUTY_DEPARTMENT_ID) {
         out.push(default_deputy_department(&fallback_api_id));
     }
-    if !out.iter().any(|item| item.id == FRONT_DESK_DEPARTMENT_ID) {
-        out.push(default_front_desk_department(&fallback_api_id));
+    if !out
+        .iter()
+        .any(|item| item.id == REMOTE_CUSTOMER_SERVICE_DEPARTMENT_ID)
+    {
+        out.push(default_remote_customer_service_department(&fallback_api_id));
     }
 
     let normalize_department_api_bindings =
@@ -888,15 +892,15 @@ fn normalize_departments(config: &mut AppConfig) {
             if item.agent_ids.is_empty() {
                 item.agent_ids = vec![DEFAULT_AGENT_ID.to_string()];
             }
-        } else if item.id == FRONT_DESK_DEPARTMENT_ID {
+        } else if item.id == REMOTE_CUSTOMER_SERVICE_DEPARTMENT_ID {
             if item.name.trim().is_empty() {
-                item.name = "前台".to_string();
+                item.name = "远程客服".to_string();
             }
             if item.summary.trim().is_empty() {
-                item.summary = "负责承接远程 IM 消息，简短友好应答，并把复杂任务转交主部门。".to_string();
+                item.summary = REMOTE_CUSTOMER_SERVICE_DEPARTMENT_SUMMARY.to_string();
             }
             if item.guide.trim().is_empty() {
-                item.guide = "你是前台部门，专门负责承接各个远程 IM 联系人的消息。说话必须简短、友好、有耐心，优先直接回答简单问题；遇到复杂任务、涉及多步骤分析、需要明显调度或你无法稳妥处理的需求时，应明确告知将转交主部门处理，不要自己展开复杂推理。".to_string();
+                item.guide = REMOTE_CUSTOMER_SERVICE_DEPARTMENT_GUIDE.to_string();
             }
             normalize_department_api_bindings(item, &valid_text_chat_api_ids);
             if item.agent_ids.is_empty() {

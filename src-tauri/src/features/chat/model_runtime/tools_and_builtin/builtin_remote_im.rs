@@ -9,19 +9,19 @@ impl RuntimeToolMetadata for BuiltinRemoteImSendTool {
     fn provider_tool_definition(&self) -> ProviderToolDefinition {
         ProviderToolDefinition::new(
             "remote_im_send",
-            "远程联系人回复决策工具。来自联系人的消息，必须且只能通过本工具完成回复决策：回复时使用 action=send；决定不回复时使用 action=no_reply（内置先发呆 7 秒，再结束本轮，且不会刷新上次成功回复时间）；不要直接输出给联系人的回复正文来代替工具调用。action=list 仅用于获取可用联系人。",
+            REMOTE_IM_SEND_TOOL_DESCRIPTION,
             serde_json::json!({
               "type": "object",
               "properties": {
-                "action": { "type": "string", "enum": ["list", "send", "no_reply"], "description": "动作。list=列出可用联系人；send=向联系人发送消息；no_reply=本轮决定不回复。对于联系人消息，最终必须使用 send 或 no_reply 做出决策。", "default": "send" },
-                "channel_id": { "type": "string", "description": "action=send 时必填；action=list 时可选（用于按渠道过滤）" },
-                "contact_id": { "type": "string", "description": "action=send 时必填；必须使用 action=list 返回的 contact_id。不要使用联系人记录主键（UUID）" },
-                "text": { "type": "string", "description": "action=send 时可选；要发送的文本内容（当传入 file_paths 时可为空）" },
-                "status": { "type": "string", "enum": ["continue", "done"], "description": "发送后状态。continue=还需继续下一步；done=本轮已完成并停止后续工具链。大小写不敏感，内部统一转小写。", "default": "done" },
+                "action": { "type": "string", "enum": ["list", "send", "no_reply"], "description": REMOTE_IM_SEND_TOOL_ACTION_DESCRIPTION, "default": "send" },
+                "channel_id": { "type": "string", "description": REMOTE_IM_SEND_TOOL_CHANNEL_ID_DESCRIPTION },
+                "contact_id": { "type": "string", "description": REMOTE_IM_SEND_TOOL_CONTACT_ID_DESCRIPTION },
+                "text": { "type": "string", "description": REMOTE_IM_SEND_TOOL_TEXT_DESCRIPTION },
+                "status": { "type": "string", "enum": ["continue", "done"], "description": REMOTE_IM_SEND_TOOL_STATUS_DESCRIPTION, "default": "done" },
                 "file_paths": {
                   "type": "array",
                   "items": { "type": "string" },
-                  "description": "可选附件路径列表：图片按图片发送，其他文件按附件发送"
+                  "description": REMOTE_IM_SEND_TOOL_FILE_PATHS_DESCRIPTION
                 }
               },
               "required": ["action"]

@@ -194,14 +194,14 @@ fn default_deputy_department(api_config_id: &str) -> DepartmentConfig {
     }
 }
 
-fn default_front_desk_department(api_config_id: &str) -> DepartmentConfig {
+fn default_remote_customer_service_department(api_config_id: &str) -> DepartmentConfig {
     let now = now_iso();
     let api_config_id = api_config_id.trim().to_string();
     DepartmentConfig {
-        id: FRONT_DESK_DEPARTMENT_ID.to_string(),
-        name: "前台".to_string(),
-        summary: "负责承接远程 IM 消息，简短友好应答，并把复杂任务转交主部门。".to_string(),
-        guide: "你是前台部门，专门负责承接各个远程 IM 联系人的消息。说话必须简短、友好、有耐心，优先直接回答简单问题；遇到复杂任务、涉及多步骤分析、需要明显调度或你无法稳妥处理的需求时，应明确告知将转交主部门处理，不要自己展开复杂推理。".to_string(),
+        id: REMOTE_CUSTOMER_SERVICE_DEPARTMENT_ID.to_string(),
+        name: "远程客服".to_string(),
+        summary: REMOTE_CUSTOMER_SERVICE_DEPARTMENT_SUMMARY.to_string(),
+        guide: REMOTE_CUSTOMER_SERVICE_DEPARTMENT_GUIDE.to_string(),
         api_config_ids: if api_config_id.is_empty() {
             Vec::new()
         } else {
@@ -230,7 +230,7 @@ fn built_in_department_rank(id: &str) -> i32 {
     match id.trim() {
         ASSISTANT_DEPARTMENT_ID => 0,
         DEPUTY_DEPARTMENT_ID => 1,
-        FRONT_DESK_DEPARTMENT_ID => 2,
+        REMOTE_CUSTOMER_SERVICE_DEPARTMENT_ID => 2,
         _ => 3,
     }
 }
@@ -239,7 +239,7 @@ fn default_departments(api_config_id: &str) -> Vec<DepartmentConfig> {
     vec![
         default_assistant_department(api_config_id),
         default_deputy_department(api_config_id),
-        default_front_desk_department(api_config_id),
+        default_remote_customer_service_department(api_config_id),
     ]
 }
 
