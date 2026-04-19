@@ -821,6 +821,7 @@
                             .expect("format old time"),
                     ),
                     needs_boundary: false,
+                    consecutive_no_reply_count: 0,
                 },
             );
         }
@@ -862,6 +863,7 @@
                             .expect("format old time"),
                     ),
                     needs_boundary: false,
+                    consecutive_no_reply_count: 0,
                 },
             );
         }
@@ -907,6 +909,7 @@
                     has_pending: true,
                     last_success_reply_at: Some(now_iso()),
                     needs_boundary: false,
+                    consecutive_no_reply_count: 0,
                 },
             );
         }
@@ -961,6 +964,7 @@
                     has_pending: false,
                     last_success_reply_at: Some(previous_success_at.clone()),
                     needs_boundary: false,
+                    consecutive_no_reply_count: 0,
                 },
             );
         }
@@ -988,6 +992,73 @@
             runtime.last_success_reply_at.as_deref(),
             Some(previous_success_at.as_str())
         );
+    }
+
+    #[test]
+    fn remote_im_finalize_round_completion_should_leave_after_two_consecutive_no_reply() {
+        let state = remote_im_test_state();
+        let contact = remote_im_test_contact("contact-a", "conversation-a");
+        let mut data = AppData::default();
+        data.remote_im_contacts.push(contact);
+        state_write_app_data_cached(&state, &data).expect("write app data");
+
+        {
+            let mut runtime_states =
+                lock_remote_im_contact_runtime_states(&state).expect("lock runtime states");
+            runtime_states.insert(
+                "contact-a".to_string(),
+                RemoteImContactRuntimeState {
+                    presence_state: RemoteImPresenceState::Present,
+                    work_state: RemoteImWorkState::Busy,
+                    has_pending: false,
+                    last_success_reply_at: Some(now_iso()),
+                    needs_boundary: false,
+                    consecutive_no_reply_count: 0,
+                },
+            );
+        }
+
+        let source = RemoteImActivationSource {
+            channel_id: "channel-a".to_string(),
+            platform: RemoteImPlatform::OnebotV11,
+            remote_contact_type: "private".to_string(),
+            remote_contact_id: "remote-a".to_string(),
+            remote_contact_name: "张三".to_string(),
+        };
+
+        remote_im_finalize_round_completion(
+            &state,
+            &[source.clone()],
+            Some("no_reply"),
+            None,
+            None,
+            &now_iso(),
+        )
+        .expect("finalize first no_reply");
+        {
+            let runtime_states =
+                lock_remote_im_contact_runtime_states(&state).expect("lock runtime states");
+            let runtime = runtime_states.get("contact-a").expect("runtime exists");
+            assert_eq!(runtime.presence_state, RemoteImPresenceState::Present);
+            assert_eq!(runtime.consecutive_no_reply_count, 1);
+        }
+
+        remote_im_finalize_round_completion(
+            &state,
+            &[source],
+            Some("no_reply"),
+            None,
+            None,
+            &now_iso(),
+        )
+        .expect("finalize second no_reply");
+        {
+            let runtime_states =
+                lock_remote_im_contact_runtime_states(&state).expect("lock runtime states");
+            let runtime = runtime_states.get("contact-a").expect("runtime exists");
+            assert_eq!(runtime.presence_state, RemoteImPresenceState::Away);
+            assert_eq!(runtime.consecutive_no_reply_count, 2);
+        }
     }
 
     #[test]
@@ -1022,6 +1093,7 @@
                     has_pending: false,
                     last_success_reply_at: None,
                     needs_boundary: true,
+                    consecutive_no_reply_count: 0,
                 },
             );
         }

@@ -421,6 +421,7 @@ fn remote_im_prepare_enqueue_runtime_state(
             if activate {
                 runtime.presence_state = RemoteImPresenceState::Present;
                 runtime.needs_boundary = true;
+                runtime.consecutive_no_reply_count = 0;
             }
             (activate, reason)
         }
@@ -717,6 +718,7 @@ fn remote_im_finalize_round_completion(
         runtime.work_state = RemoteImWorkState::Idle;
         let previous_presence = runtime.presence_state;
         let previous_pending = runtime.has_pending;
+        let previous_no_reply_count = runtime.consecutive_no_reply_count;
         if let Some(error) = failed_error {
             eprintln!(
                 "[远程联系人状态机] 轮次结束 失败: contact_id={}, presence={:?}->{:?}, pending={}, error={}",
@@ -735,13 +737,18 @@ fn remote_im_finalize_round_completion(
                     .map(|target| remote_im_contact_matches_reply_target(source, target))
                     .unwrap_or(activated_sources.len() == 1);
                 runtime.presence_state = RemoteImPresenceState::Present;
+                runtime.consecutive_no_reply_count = 0;
                 if target_matched {
                     runtime.last_success_reply_at = Some(finished_at.to_string());
                 }
             }
             "no_reply" => {
+                runtime.consecutive_no_reply_count =
+                    runtime.consecutive_no_reply_count.saturating_add(1);
                 if runtime.has_pending {
                     runtime.presence_state = RemoteImPresenceState::Present;
+                } else if runtime.consecutive_no_reply_count >= 2 {
+                    runtime.presence_state = RemoteImPresenceState::Away;
                 } else if let Some(last_success_at) = runtime.last_success_reply_at.as_deref() {
                     let elapsed_seconds = parse_iso(last_success_at)
                         .map(|last| (now_utc() - last).whole_seconds().max(0) as u64)
@@ -757,6 +764,7 @@ fn remote_im_finalize_round_completion(
             }
             "send_async" | "" => {
                 runtime.presence_state = RemoteImPresenceState::Present;
+                runtime.consecutive_no_reply_count = 0;
             }
             _ => {}
         }
@@ -766,13 +774,15 @@ fn remote_im_finalize_round_completion(
             follow_up_sources.push(source.clone());
         }
         eprintln!(
-            "[远程联系人状态机] 轮次结束 完成: contact_id={}, decision={}, presence={:?}->{:?}, pending={}->{}, follow_up={}, last_success_reply_at={}",
+            "[远程联系人状态机] 轮次结束 完成: contact_id={}, decision={}, presence={:?}->{:?}, pending={}->{}, no_reply_count={}->{}, follow_up={}, last_success_reply_at={}",
             contact.id,
             reply_decision.unwrap_or(""),
             previous_presence,
             runtime.presence_state,
             previous_pending,
             runtime.has_pending,
+            previous_no_reply_count,
+            runtime.consecutive_no_reply_count,
             should_follow_up_after_round,
             runtime.last_success_reply_at.as_deref().unwrap_or("")
         );
@@ -794,6 +804,7 @@ fn remote_im_finalize_async_send_result(
     let mut runtime_states = lock_remote_im_contact_runtime_states(state)?;
     let runtime = remote_im_contact_runtime_state_mut(&mut runtime_states, &contact.id);
     runtime.presence_state = RemoteImPresenceState::Present;
+    runtime.consecutive_no_reply_count = 0;
     if send_ok {
         runtime.last_success_reply_at = Some(now.to_string());
     }

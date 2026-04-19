@@ -117,6 +117,7 @@ struct RemoteImContactRuntimeState {
     has_pending: bool,
     last_success_reply_at: Option<String>,
     needs_boundary: bool,
+    consecutive_no_reply_count: u32,
 }
 
 impl Default for RemoteImContactRuntimeState {
@@ -127,6 +128,7 @@ impl Default for RemoteImContactRuntimeState {
             has_pending: false,
             last_success_reply_at: None,
             needs_boundary: false,
+            consecutive_no_reply_count: 0,
         }
     }
 }
