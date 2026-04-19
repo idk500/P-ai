@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding when working with code in this repository.
 
 ## 项目概述
 
@@ -171,4 +171,3 @@ Tauri 管理 3 个无边框窗口：`main`（配置，900×900）、`chat`（对
 - 异常日志必须带异常信息（Rust 使用 `{:?}` 或 `Display`，TypeScript 包含 `error.message` 和必要的 `error.stack`），避免只打印"失败"无上下文。
 - 高频循环日志仅输出聚合信息，避免每条记录都打印 info/warn 级别日志；明细使用 debug/trace 级别。
 - 用户可见行为变化（例如切换模式、禁用功能、跳过原因）必须有一条清晰 INFO 日志。
-
