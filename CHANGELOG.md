@@ -4,6 +4,7 @@
 
 - 优化（conversation-persistence-targeted-write-paths）：除全量归档导入外，移除各类读接口、联系人配置更新、任务分发、委托回退、归档整理与未归档会话操作中对 `persist_app_data_conversation_runtime_delta(...)` 的误用；这些路径现在分别改为单会话写入、定向会话写入或仅运行态写入，不再为局部变更触发整份会话列表序列化比较
 - 优化（chat-index-incremental-update）：单会话与定向删改路径的 `chat_index` 改为按会话条目增量 `upsert / remove`，不再每次基于全部 `conversations` 重建整个索引文件；纯运行态变更继续只写 `runtime_state`，避免无意义触碰会话文件与聊天索引
+- 优化（archive-dialog-preview-frontend-only）：归档操作弹窗的预览改为前端本地计算，直接复用当前会话消息、会话概览运行态与最近一次上下文占用信息；打开弹窗时不再额外调用后端 `preview_force_archive_current / preview_force_compact_current`，避免重复读取会话与两次 `conversation_lock` 持有
 
 ## 更新：切换对话模型不再自动刷新当前会话历史
 

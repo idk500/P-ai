@@ -26,6 +26,9 @@ export type ForceCompactionPreviewResult = {
 
 type RecallMode = "with_patch" | "message_only" | "cancel";
 
+const SHORT_CONVERSATION_DELETE_THRESHOLD = 3;
+const SHORT_CONVERSATION_COMPACTION_THRESHOLD = 10;
+
 type UseShellDialogFlowsOptions = {
   t: (key: string, params?: Record<string, unknown>) => string;
   configTab: Ref<string>;
@@ -69,12 +72,94 @@ export function useShellDialogFlows(options: UseShellDialogFlowsOptions) {
     forceCompactionPreview.value = null;
   }
 
-  async function openForceArchiveActionDialog() {
-    const apiConfigId = String(options.currentForegroundApiConfigId.value || "").trim();
-    const agentId = String(options.currentForegroundAgentId.value || "").trim();
-    const departmentId = String(options.currentForegroundDepartmentId.value || "").trim();
+  function currentUnarchivedConversationSummary(): UnarchivedConversationSummary | null {
     const conversationId = String(options.currentChatConversationId.value || "").trim();
-    if (!conversationId || !apiConfigId || !agentId) {
+    if (!conversationId) return null;
+    return options.unarchivedConversations.value.find(
+      (item) => String(item.conversationId || "").trim() === conversationId,
+    ) ?? null;
+  }
+
+  function countArchiveCandidateMessages(messages: ChatMessage[]): number {
+    return messages.filter((message) => {
+      const role = String(message.role || "").trim().toLowerCase();
+      return role === "user" || role === "assistant";
+    }).length;
+  }
+
+  function hasAssistantReply(messages: ChatMessage[]): boolean {
+    return messages.some((message) => String(message.role || "").trim().toLowerCase() === "assistant");
+  }
+
+  function latestBackendContextUsagePercent(messages: ChatMessage[]): number {
+    for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+      const message = messages[idx];
+      if (String(message.role || "").trim().toLowerCase() !== "assistant") continue;
+      const raw = Number((message.providerMeta || {}).contextUsagePercent);
+      if (!Number.isFinite(raw)) continue;
+      return Math.min(100, Math.max(0, Math.round(raw)));
+    }
+    return 0;
+  }
+
+  function buildForceArchivePreview(conversationId: string): ForceArchivePreviewResult {
+    const messages = options.allMessages.value || [];
+    const summary = currentUnarchivedConversationSummary();
+    const messageCount = countArchiveCandidateMessages(messages);
+    const assistantReplyPresent = hasAssistantReply(messages);
+    const isEmpty = messages.length === 0;
+    const archiveDisabledReason = summary?.runtimeState === "organizing_context"
+      ? "当前会话正在后台归档或整理上下文，请稍候。"
+      : isEmpty
+        ? "当前会话为空，不能归档。"
+        : !assistantReplyPresent
+          ? "当前会话还没有助理回复，不能归档。"
+          : messageCount <= SHORT_CONVERSATION_DELETE_THRESHOLD
+            ? `当前会话过短（仅 ${messageCount} 条用户/助理消息），暂不建议归档。`
+            : null;
+    return {
+      conversationId,
+      canArchive: !archiveDisabledReason,
+      canDropConversation: true,
+      messageCount,
+      hasAssistantReply: assistantReplyPresent,
+      isEmpty,
+      archiveDisabledReason,
+    };
+  }
+
+  function buildForceCompactionPreview(conversationId: string): ForceCompactionPreviewResult {
+    const messages = options.allMessages.value || [];
+    const summary = currentUnarchivedConversationSummary();
+    const messageCount = countArchiveCandidateMessages(messages);
+    const assistantReplyPresent = hasAssistantReply(messages);
+    const isEmpty = messages.length === 0;
+    const contextUsagePercent = latestBackendContextUsagePercent(messages);
+    const compactionDisabledReason = summary?.runtimeState === "organizing_context"
+      ? "当前会话正在整理上下文或归档处理中，请稍候。"
+      : isEmpty
+        ? "当前会话为空，无需整理。"
+        : !assistantReplyPresent
+          ? "当前会话还没有助理回复，暂不建议压缩。"
+          : messageCount < SHORT_CONVERSATION_COMPACTION_THRESHOLD
+            ? `当前会话较短（仅 ${messageCount} 条用户/助理消息），暂不建议压缩。`
+            : contextUsagePercent < 10
+              ? `当前上下文占用仅 ${contextUsagePercent}%，暂不建议手动压缩。`
+              : null;
+    return {
+      conversationId,
+      canCompact: !compactionDisabledReason,
+      messageCount,
+      hasAssistantReply: assistantReplyPresent,
+      isEmpty,
+      contextUsagePercent,
+      compactionDisabledReason,
+    };
+  }
+
+  async function openForceArchiveActionDialog() {
+    const conversationId = String(options.currentChatConversationId.value || "").trim();
+    if (!conversationId) {
       options.setStatus("当前没有可处理的会话。");
       return;
     }
@@ -83,24 +168,8 @@ export function useShellDialogFlows(options: UseShellDialogFlowsOptions) {
     forceArchivePreview.value = null;
     forceCompactionPreview.value = null;
     try {
-      const [archivePreview, compactionPreview] = await Promise.all([
-        invokeTauri<ForceArchivePreviewResult>("preview_force_archive_current", {
-          input: {
-            apiConfigId,
-            agentId,
-            departmentId: departmentId || null,
-            conversationId,
-          },
-        }),
-        invokeTauri<ForceCompactionPreviewResult>("preview_force_compact_current", {
-          input: {
-            apiConfigId,
-            agentId,
-            departmentId: departmentId || null,
-            conversationId,
-          },
-        }),
-      ]);
+      const archivePreview = buildForceArchivePreview(conversationId);
+      const compactionPreview = buildForceCompactionPreview(conversationId);
       forceArchivePreview.value = archivePreview;
       forceCompactionPreview.value = compactionPreview;
       forceArchiveActionDialogOpen.value = true;
