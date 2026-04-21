@@ -1149,7 +1149,11 @@ fn set_department_primary_api_config(
             // 保持当前顺序，只同步全局选中模型即可。
         } else {
             next_ids.retain(|item| !item.trim().eq_ignore_ascii_case(api_config_id));
-            next_ids.insert(0, api_config_id.to_string());
+            if next_ids.is_empty() {
+                next_ids.push(api_config_id.to_string());
+            } else {
+                next_ids[0] = api_config_id.to_string();
+            }
         }
 
         let mut seen = std::collections::HashSet::<String>::new();

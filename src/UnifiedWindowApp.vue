@@ -852,13 +852,13 @@ function applyDepartmentPrimaryApiConfigLocally(
     }
     return false;
   }
-  next.splice(
-    0,
-    next.length,
-    nextId,
-    ...next.filter((item) => item.toLowerCase() !== nextId.toLowerCase()),
-  );
-  const deduped = Array.from(new Set(next.filter(Boolean)));
+  const filtered = next.filter((item) => item.toLowerCase() !== nextId.toLowerCase());
+  if (filtered.length === 0) {
+    filtered.push(nextId);
+  } else {
+    filtered[0] = nextId;
+  }
+  const deduped = Array.from(new Set(filtered.filter(Boolean)));
   department.apiConfigIds = deduped;
   department.apiConfigId = deduped[0] || "";
   department.updatedAt = new Date().toISOString();
