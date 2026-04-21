@@ -46,7 +46,7 @@
         <button class="btn bg-base-100 border-base-300 hover:bg-base-200" :disabled="viewMode !== 'archive' || !selectedArchiveId" @click="$emit('exportArchive', { format: 'json' })">{{ t("archives.exportJson") }}</button>
         <button
           class="btn bg-base-100 border-base-300 hover:bg-base-200 text-error"
-          :disabled="viewMode === 'delegate' || (viewMode === 'archive' && !selectedArchiveId) || (viewMode === 'current' && !selectedUnarchivedConversationId) || (viewMode === 'remoteIm' && !selectedRemoteImContactId)"
+          :disabled="viewMode === 'delegate' || (viewMode === 'archive' && !selectedArchiveId) || (viewMode === 'current' && (!selectedUnarchivedConversationId || selectedCurrentConversationSummary?.isMainConversation)) || (viewMode === 'remoteIm' && !selectedRemoteImContactId)"
           @click="viewMode === 'archive' ? onDeleteArchiveClick(selectedArchiveId) : viewMode === 'remoteIm' ? onDeleteRemoteImContactClick(selectedRemoteImContactId) : onDeleteUnarchivedClick(selectedUnarchivedConversationId)"
         >
           {{ t("common.delete") }}
@@ -273,6 +273,11 @@ const visibleMessages = computed(() =>
       : viewMode.value === "remoteIm"
         ? props.remoteImContactMessages.filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool")
         : props.archiveMessages,
+);
+const selectedCurrentConversationSummary = computed(() =>
+  props.unarchivedConversations.find(
+    (item) => String(item.conversationId || "").trim() === String(props.selectedUnarchivedConversationId || "").trim(),
+  ) ?? null,
 );
 const archiveImportInputRef = ref<HTMLInputElement | null>(null);
 

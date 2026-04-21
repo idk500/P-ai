@@ -105,10 +105,13 @@ export function useShellDialogFlows(options: UseShellDialogFlowsOptions) {
   function buildForceArchivePreview(conversationId: string): ForceArchivePreviewResult {
     const messages = options.allMessages.value || [];
     const summary = currentUnarchivedConversationSummary();
+    const isMainConversation = summary?.isMainConversation === true;
     const messageCount = countArchiveCandidateMessages(messages);
     const assistantReplyPresent = hasAssistantReply(messages);
     const isEmpty = messages.length === 0;
-    const archiveDisabledReason = summary?.runtimeState === "organizing_context"
+    const archiveDisabledReason = isMainConversation
+      ? "主会话暂不支持归档。"
+      : summary?.runtimeState === "organizing_context"
       ? "当前会话正在后台归档或整理上下文，请稍候。"
       : isEmpty
         ? "当前会话为空，不能归档。"
@@ -120,7 +123,7 @@ export function useShellDialogFlows(options: UseShellDialogFlowsOptions) {
     return {
       conversationId,
       canArchive: !archiveDisabledReason,
-      canDropConversation: true,
+      canDropConversation: !isMainConversation,
       messageCount,
       hasAssistantReply: assistantReplyPresent,
       isEmpty,
@@ -197,6 +200,11 @@ export function useShellDialogFlows(options: UseShellDialogFlowsOptions) {
   async function confirmDeleteConversationFromArchiveDialog() {
     const conversationId = String(options.currentChatConversationId.value || "").trim();
     if (!conversationId) return;
+    if (currentUnarchivedConversationSummary()?.isMainConversation) {
+      closeForceArchiveActionDialog();
+      options.setStatus("主会话暂不支持删除。");
+      return;
+    }
     closeForceArchiveActionDialog();
     await options.deleteUnarchivedConversationFromArchives(conversationId);
   }

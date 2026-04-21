@@ -1524,6 +1524,15 @@ async fn force_archive_current(
 ) -> Result<ForceArchiveResult, String> {
     let (selected_api, resolved_api, source, effective_agent_id) =
         resolve_archive_target_conversation(state.inner(), &input.session)?;
+    let runtime = state_read_runtime_state_cached(state.inner())?;
+    let main_conversation_id = runtime
+        .main_conversation_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    if source.id.trim() == main_conversation_id {
+        return Err("主会话暂不支持归档。".to_string());
+    }
     if get_conversation_runtime_state(state.inner(), &source.id)? == MainSessionState::OrganizingContext {
         return Err("强制归档正在进行中，请稍候。".to_string());
     }
@@ -1631,10 +1640,19 @@ fn preview_force_archive_current(
 ) -> Result<ForceArchivePreviewResult, String> {
     let (_selected_api, _resolved_api, source, _effective_agent_id) =
         resolve_archive_target_conversation(state.inner(), &input)?;
+    let runtime = state_read_runtime_state_cached(state.inner())?;
+    let main_conversation_id = runtime
+        .main_conversation_id
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    let is_main_conversation = source.id.trim() == main_conversation_id;
     let message_count = archive_pipeline_message_count_for_delete(&source);
     let has_assistant_reply = archive_pipeline_has_assistant_reply(&source);
     let is_empty = source.messages.is_empty();
-    let archive_disabled_reason = if get_conversation_runtime_state(state.inner(), &source.id)?
+    let archive_disabled_reason = if is_main_conversation {
+        Some("主会话暂不支持归档。".to_string())
+    } else if get_conversation_runtime_state(state.inner(), &source.id)?
         == MainSessionState::OrganizingContext
     {
         Some("当前会话正在后台归档或整理上下文，请稍候。".to_string())
@@ -1653,7 +1671,7 @@ fn preview_force_archive_current(
     Ok(ForceArchivePreviewResult {
         conversation_id: source.id,
         can_archive: archive_disabled_reason.is_none(),
-        can_drop_conversation: true,
+        can_drop_conversation: !is_main_conversation,
         message_count,
         has_assistant_reply,
         is_empty,

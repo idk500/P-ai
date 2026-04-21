@@ -1078,12 +1078,23 @@ fn delete_unarchived_conversation(
         .lock()
         .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let app_config = state_read_config_cached(&state)?;
-    let mut data = state_read_app_data_cached(&state)?;
-    let deleted_is_main = data
+    let runtime = state_read_runtime_state_cached(&state)?;
+    let main_conversation_id = runtime
         .main_conversation_id
         .as_deref()
         .map(str::trim)
-        == Some(conversation_id);
+        .unwrap_or_default()
+        .to_string();
+    if conversation_id == main_conversation_id {
+        drop(guard);
+        runtime_log_info(format!(
+            "[会话] 跳过，任务=delete_unarchived_conversation，action=delete_unarchived_convo，convo_id={}，reason=main_conversation_locked，duration_ms={}",
+            conversation_id,
+            started_at.elapsed().as_millis()
+        ));
+        return Err("主会话暂不支持删除".to_string());
+    }
+    let mut data = state_read_app_data_cached(&state)?;
     let before = data.conversations.len();
     data.conversations.retain(|conversation| {
         !(conversation.id == conversation_id
@@ -1099,27 +1110,6 @@ fn delete_unarchived_conversation(
         ));
         return Err("Unarchived conversation not found.".to_string());
     }
-    let _ = normalize_main_conversation_marker(&mut data, "");
-    if !deleted_is_main {
-        mark_tasks_as_session_lost(&state.data_path, conversation_id);
-    }
-    if deleted_is_main {
-        let main_api_config_id = assistant_department(&app_config)
-            .map(department_primary_api_config_id)
-            .or_else(|| resolve_selected_api_config(&app_config, None).map(|item| item.id.clone()))
-            .ok_or_else(|| "No API config available".to_string())?;
-        let conversation = build_foreground_chat_conversation_record(
-            &state.data_path,
-            &data,
-            &main_api_config_id,
-            &data.assistant_department_agent_id,
-            ASSISTANT_DEPARTMENT_ID,
-            "",
-        );
-        let next_main_id = conversation.id.clone();
-        data.conversations.push(conversation);
-        data.main_conversation_id = Some(next_main_id);
-    }
     let _ = normalize_single_active_main_conversation(&mut data);
     let active_conversation_id = data
         .conversations
@@ -1134,11 +1124,22 @@ fn delete_unarchived_conversation(
             data.conversations
                 .iter()
                 .find(|conversation| {
-                    conversation.summary.trim().is_empty() && conversation_visible_in_foreground_lists(conversation)
+                    conversation.summary.trim().is_empty()
+                        && conversation_visible_in_foreground_lists(conversation)
                 })
                 .map(|conversation| conversation.id.clone())
         })
         .unwrap_or_default();
+    mark_tasks_as_session_lost(&state.data_path, conversation_id);
+    if active_conversation_id.trim().is_empty() {
+        drop(guard);
+        runtime_log_info(format!(
+            "[会话] 失败，任务=delete_unarchived_conversation，action=delete_unarchived_convo，convo_id={}，reason=no_active_conversation_after_delete，duration_ms={}",
+            conversation_id,
+            started_at.elapsed().as_millis()
+        ));
+        return Err("删除后未找到可用会话".to_string());
+    }
     let overview_payload =
         build_unarchived_conversation_overview_payload(state.inner(), &app_config, &data);
     let mut target_conversation_ids = Vec::<String>::new();

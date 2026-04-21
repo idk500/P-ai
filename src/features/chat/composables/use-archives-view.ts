@@ -274,8 +274,15 @@ export function useArchivesView(options: UseArchivesViewOptions) {
 
   async function deleteUnarchivedConversation(conversationId: string): Promise<DeleteUnarchivedConversationResult | null> {
     if (!conversationId) return null;
+    const summary = unarchivedConversations.value.find(
+      (item) => String(item.conversationId || "").trim() === conversationId,
+    );
+    if (summary?.isMainConversation) {
+      options.setStatus("主会话暂不支持删除。");
+      return null;
+    }
     try {
-      console.info("[ARCHIVES] delete current unarchived main conversation", { conversationId });
+      console.info("[ARCHIVES] delete current unarchived conversation", { conversationId });
       const result = await invokeTauri<DeleteUnarchivedConversationResult>("delete_unarchived_conversation", {
         input: { conversationId },
       });

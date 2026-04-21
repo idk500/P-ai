@@ -1,5 +1,9 @@
 # 变更日志
 
+## 更新：主会话禁止归档与删除
+
+- 修复（main-conversation-archive-and-delete-locked）：主会话现在明确禁止归档与删除；后端 `force_archive_current`、归档预览与 `delete_unarchived_conversation` 会直接拦截主会话，前端归档弹窗、归档窗口删除按钮与删除动作也同步禁用或给出提示，避免主会话被误删/误归档后丢失入口
+
 ## 更新：分享导出头像与聊天布局修正
 
 - 修复（share-export-avatar-side-and-data-url）：分享 HTML 与图片导出的聊天布局改为真正使用左右两侧头像列；修正 `chat-end` 时用户头像错误出现在左侧的问题，并复用前端现成的用户头像与人格头像 data URL，导出页优先显示真实头像，仅在缺失时退回首字占位
