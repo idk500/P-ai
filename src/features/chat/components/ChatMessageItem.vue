@@ -4,7 +4,7 @@
     :data-message-role="isOwnMessage(block) ? 'user' : block.role"
     :data-active-turn-user="activeTurnUser ? 'true' : undefined"
     :class="[
-      'chat group/user-turn mt-3 rounded-2xl px-3 py-2 transition-colors',
+      'chat group/user-turn rounded-2xl px-3 transition-colors',
       shouldAnimateEnter(block) ? 'ecall-message-enter' : '',
       isOwnMessage(block) ? 'chat-end' : 'chat-start',
       selectionModeEnabled && selected ? 'ecall-message-selected bg-neutral/10 ring-1 ring-neutral/20 shadow-sm' : '',
@@ -335,10 +335,10 @@
           </div>
           <div
             :class="[
-              'chat-footer ecall-message-footer mt-1 flex h-6 items-center gap-1.5 transition-opacity',
+              'chat-footer ecall-message-footer flex h-6 items-center gap-1.5 transition-opacity',
               selectionModeEnabled
                 ? 'opacity-100 pointer-events-auto'
-                : canRegenerate
+                : showRegenerateAction && canRegenerate
                   ? 'opacity-100 pointer-events-auto'
                   : !block.isStreaming
                     ? 'opacity-0 pointer-events-none group-hover/user-turn:opacity-100 group-hover/user-turn:pointer-events-auto'
@@ -367,11 +367,12 @@
               <Copy class="h-3.5 w-3.5" />
             </button>
             <button
+              v-if="showRegenerateAction"
               type="button"
               class="ecall-message-footer-action inline-flex h-6 w-6 items-center justify-center rounded text-base-content/55 hover:text-base-content"
               :title="t('chat.regenerate')"
-              :class="!selectionModeEnabled && !block.isStreaming && canRegenerate ? '' : 'opacity-0 pointer-events-none'"
-              :disabled="selectionModeEnabled || block.isStreaming || !canRegenerate || busy"
+              :class="!selectionModeEnabled && !block.isStreaming && showRegenerateAction && canRegenerate ? '' : 'opacity-0 pointer-events-none'"
+              :disabled="selectionModeEnabled || block.isStreaming || !showRegenerateAction || !canRegenerate || busy"
               @click="emit('regenerateTurn', { turnId: block.sourceMessageId || block.id })"
             >
               <RotateCcw class="h-3.5 w-3.5" />
@@ -382,19 +383,6 @@
     </template>
     <template v-else>
       <div class="chat-header mb-1 flex items-baseline gap-2">
-        <button
-          v-if="isOwnMessage(block)"
-          type="button"
-          :class="[
-            'ecall-message-recall-action inline-flex h-5 w-5 items-center justify-center rounded text-base-content/40 hover:text-base-content opacity-0 pointer-events-none transition-opacity',
-            !selectionModeEnabled ? 'group-hover/user-turn:opacity-100 group-hover/user-turn:pointer-events-auto' : '',
-          ]"
-          :title="t('chat.recall')"
-          :disabled="selectionModeEnabled || busy"
-          @click="emit('recallTurn', { turnId: block.sourceMessageId || block.id })"
-        >
-          <Undo2 class="h-3 w-3" />
-        </button>
         <span v-if="isOwnMessage(block)" class="text-xs leading-none">
           <time v-if="formattedCreatedAt && !block.isStreaming" class="text-base-content/40 leading-none">{{ formattedCreatedAt }}</time>
         </span>
@@ -466,6 +454,25 @@
             <span class="text-[11px]">{{ file.fileName }}</span>
           </div>
         </div>
+      </div>
+      <div
+        v-if="isOwnMessage(block)"
+        :class="[
+          'flex justify-end transition-opacity',
+          selectionModeEnabled
+            ? 'opacity-0 pointer-events-none'
+            : 'opacity-0 pointer-events-none group-hover/user-turn:opacity-100 group-hover/user-turn:pointer-events-auto',
+        ]"
+      >
+        <button
+          type="button"
+          class="ecall-message-recall-action inline-flex h-5 w-5 items-center justify-center rounded text-base-content/40 hover:text-base-content"
+          :title="t('chat.recall')"
+          :disabled="selectionModeEnabled || busy"
+          @click="emit('recallTurn', { turnId: block.sourceMessageId || block.id })"
+        >
+          <Undo2 class="h-3 w-3" />
+        </button>
       </div>
     </template>
   </div>
@@ -550,6 +557,8 @@ const emit = defineEmits<{
   (e: "toggleAudioPlayback", payload: { id: string; audio: { mime: string; bytesBase64: string } }): void;
   (e: "assistantLinkClick", event: MouseEvent): void;
 }>();
+
+const showRegenerateAction = false;
 
 const { t } = useI18n();
 const resolvedImageSrcMap = ref<Record<string, string>>({});

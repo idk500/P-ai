@@ -2,6 +2,7 @@
 
 ## 发布：v0.9.21
 
+- 优化（chat-message-action-layout-tighten）：聊天消息最外层行间距与上下内边距进一步收紧，减少相邻消息之间的空白；同时把用户消息的撤回按钮移到气泡下方右侧，并去掉操作区额外顶部间距，让消息气泡与操作按钮整体更紧凑
 - 功能（chat-conversation-list-search-filter）：未归档会话侧边栏与会话切换弹层新增本地搜索过滤，支持按会话标题和最近两条预览消息筛选结果，并补齐中英繁搜索占位与空态文案
 - 优化（chat-conversation-pin-action-icon-clarify）：会话列表与会话切换弹层的置顶按钮图标改按“动作”表达语义，未置顶会话显示 `Pin`、已置顶会话显示 `PinOff`，主会话不再显示置顶按钮，避免把按钮误读成状态徽标
 - 优化（chat-conversation-list-spacing-tighten）：收紧聊天窗口会话列表与会话切换弹层的左右留白、分组间距和条目内部 padding/gap，让列表整体更紧凑，减少无效留白
