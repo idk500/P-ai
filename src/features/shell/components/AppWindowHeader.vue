@@ -77,6 +77,8 @@
           />
         </svg>
       </div>
+
+      <PipelineStatusIndicator :status="pipelineStatus" :label="pipelineLabel" />
     </div>
 
     <div
@@ -330,6 +332,8 @@ import ChatConversationListCard from "../../chat/components/ChatConversationList
 import { registerChatMarkstreamComponents } from "../../chat/markdown/register-chat-markstream";
 import type { ConfigSearchResult, ConfigSearchTab } from "../../config/search/config-search";
 import "markstream-vue/index.css";
+import PipelineStatusIndicator from "./PipelineStatusIndicator.vue";
+import { usePipelineStatus } from "../composables/use-pipeline-status";
 
 const RING_RADIUS = 14;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
@@ -352,6 +356,8 @@ const RECENT_CONVERSATION_TOPICS_LIMIT = 7;
 enableMermaid();
 enableKatex();
 registerChatMarkstreamComponents();
+
+const { status: pipelineStatus, label: pipelineLabel, setBusy, setIdle, setError } = usePipelineStatus();
 
 const markstreamMarkdown = getMarkdown();
 const markdownCodeBlockProps = {
