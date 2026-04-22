@@ -2514,6 +2514,91 @@
     }
 
     #[test]
+    #[ignore = "压测探针：本地按需运行 cargo test prepared_prompt_to_messages_json_large_context_probe -- --ignored --nocapture"]
+    fn prepared_prompt_to_messages_json_large_context_probe() {
+        let large_text = "上下文片段。".repeat(220_000);
+        let prepared = PreparedPrompt {
+            preamble: "系统提示词".to_string(),
+            history_messages: vec![PreparedHistoryMessage {
+                role: "user".to_string(),
+                text: large_text.clone(),
+                extra_text_blocks: Vec::new(),
+                user_time_text: None,
+                images: Vec::new(),
+                audios: Vec::new(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+            }],
+            latest_user_text: large_text,
+            latest_user_meta_text: String::new(),
+            latest_user_extra_text: String::new(),
+            latest_user_extra_blocks: Vec::new(),
+            latest_images: Vec::new(),
+            latest_audios: Vec::new(),
+        };
+
+        let started = std::time::Instant::now();
+        let messages = prepared_prompt_to_messages_json(&prepared);
+        let json_bytes = serde_json::to_vec(&messages).expect("serialize large prepared messages");
+        let elapsed_ms = started.elapsed().as_millis();
+
+        eprintln!(
+            "[压测] prepared_prompt_to_messages_json 大上下文结果：messages={}，bytes={}，elapsed={}ms",
+            messages.len(),
+            json_bytes.len(),
+            elapsed_ms
+        );
+
+        assert!(json_bytes.len() > 1_500_000);
+    }
+
+    #[test]
+    #[ignore = "压测探针：本地按需运行 cargo test llm_round_log_large_response_probe -- --ignored --nocapture"]
+    fn llm_round_log_large_response_probe() {
+        let state = test_chat_runtime_state();
+        let large_response = "响应片段。".repeat(220_000);
+        let response = serde_json::json!({
+            "assistantText": large_response,
+            "reasoningStandard": "",
+            "reasoningInline": "",
+            "toolHistoryEvents": []
+        });
+
+        let started = std::time::Instant::now();
+        push_llm_round_log(
+            Some(&state),
+            Some("trace-large-response".to_string()),
+            None,
+            "Archive summary",
+            RequestFormat::OpenAI,
+            "archive-summary",
+            "deepseek-chat",
+            "http://localhost:5001/v1",
+            masked_auth_headers("sk-test"),
+            None,
+            Some(response),
+            None,
+            1234,
+            None,
+        );
+        let elapsed_ms = started.elapsed().as_millis();
+        let logs = state.llm_round_logs.lock().expect("llm round logs");
+        let stored = logs.back().expect("stored log entry");
+        let response_bytes = serde_json::to_vec(&stored.response).expect("serialize stored response");
+
+        eprintln!(
+            "[压测] llm_round_log_large_response 大响应结果：stored_logs={}，response_bytes={}，elapsed={}ms",
+            logs.len(),
+            response_bytes.len(),
+            elapsed_ms
+        );
+
+        assert_eq!(logs.len(), 1);
+        assert!(response_bytes.len() > 1_500_000);
+    }
+
+    #[test]
     #[ignore = "性能探针：本地按需运行 cargo test build_prepared_prompt_for_mode_perf_probe -- --ignored --nocapture"]
     fn build_prepared_prompt_for_mode_perf_probe() {
         let state = test_chat_runtime_state();

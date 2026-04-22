@@ -2,6 +2,7 @@
 
 ## 发布：v0.9.21
 
+- 优化（tokio-worker-stack-and-llm-log-slimming）：Tauri 后端异步运行时改为显式使用 8MB Tokio worker 栈，缓解超大模型请求在主进程 worker 上执行时更容易触发栈溢出的风险；同时调用日志移除完整 `request` 持久化，不再为每轮模型请求额外保留一整份请求 JSON，仅继续保留计时、headers、工具信息、原始响应、错误与聚合轮次信息，降低大上下文场景下日志对象本身的内存占用与链路负担；工具安全审查、工具审查提交、归档摘要与主聊天轮次的模型调用日志也改为在外层调用点统一组装，不再由共享推理入口在内部直接落日志；`chat_pipeline` 聚合主卡现在会优先从 pending round buffer 读取最近一轮真实 `headers/tools`，避免聚合改造后回退到兜底值
 - 修复（json-only-force-non-stream-across-openai-responses-anthropic）：`json_only` 模型请求现在会统一强制走非流式，不再只在 OpenAI Chat 路径生效；同时为 `OpenAIResponses/Codex` 与 `Anthropic` 补齐真正的非流式调用实现，避免工具安全审查、上下文整理与归档摘要这类只需要完整 JSON 结果的请求误走流式或名义非流式、实际仍落回流式链路
 - 发布（release-0.9.21）：同步前端 `package.json`、Tauri `tauri.conf.json` 与 Rust `Cargo.toml` / `Cargo.lock` 版本号到 `0.9.21`，纳入本轮已完成的“配置窗口内联更新日志卡片、远程 changelog 代理读取修正、多语言补齐与流式跨工具分段相关脏逻辑清理”等更新
 - 优化（request-log-pipeline-aggregation-and-ui）：设置页“调用日志”改为以调度 `chat_pipeline` 为主语展示，单次调度内的多轮 `chat` 会先在内存中暂存并在 pipeline 收口时聚合进同一条主日志；主列表仅按最近 10 次调度裁剪，同时日志页改成“调度主卡 + 轮次摘要列表 + 轮次详情弹层”，不再把多次工具轮转平铺成多张同级卡片

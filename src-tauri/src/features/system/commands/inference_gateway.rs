@@ -5,6 +5,46 @@ struct CallPolicy {
     json_only: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ModelCallLogParts {
+    scene: &'static str,
+    request_format: RequestFormat,
+    provider_name: String,
+    model_name: String,
+    base_url: String,
+    headers: Vec<LlmRoundLogHeader>,
+    tools: Option<Value>,
+    response: Option<Value>,
+    error: Option<String>,
+    elapsed_ms: u64,
+    timeline: Option<Vec<LlmRoundLogStage>>,
+}
+
+#[derive(Debug, Clone)]
+struct ModelCallExecutionResult {
+    result: Result<ModelReply, String>,
+    log_parts: ModelCallLogParts,
+}
+
+fn push_model_call_log_parts(state: Option<&AppState>, execution: &ModelCallExecutionResult) {
+    push_llm_round_log(
+        state,
+        None,
+        None,
+        execution.log_parts.scene,
+        execution.log_parts.request_format,
+        &execution.log_parts.provider_name,
+        &execution.log_parts.model_name,
+        &execution.log_parts.base_url,
+        execution.log_parts.headers.clone(),
+        execution.log_parts.tools.clone(),
+        execution.log_parts.response.clone(),
+        execution.log_parts.error.clone(),
+        execution.log_parts.elapsed_ms,
+        execution.log_parts.timeline.clone(),
+    );
+}
+
 impl CallPolicy {
     fn archive_json(timeout_secs: u64) -> Self {
         Self {
@@ -261,7 +301,7 @@ async fn invoke_model_with_policy(
     prepared: PreparedPrompt,
     policy: CallPolicy,
     app_state: Option<&AppState>,
-) -> Result<ModelReply, String> {
+) -> ModelCallExecutionResult {
     let started_at = std::time::Instant::now();
     let mut prepared = prepared;
     let stream_cache_key = provider_streaming_cache_key(
@@ -278,12 +318,6 @@ async fn invoke_model_with_policy(
             stream_cache_key, policy.scene
         ));
     }
-    let mut request_log = prepared_prompt_to_equivalent_request_json(
-        &prepared,
-        model_name,
-        resolved_api.temperature,
-        resolved_api.max_output_tokens,
-    );
     let headers = masked_auth_headers(&resolved_api.api_key);
     if policy.json_only {
         // json_only is enforced by prompt contract + caller-side JSON parse.
@@ -347,12 +381,6 @@ async fn invoke_model_with_policy(
                     "[推理] 检测到上游不支持 system message，已在本次运行内切换 system->user 降级重试: key={}, scene={}, err={}",
                     stream_cache_key, policy.scene, err
                 ));
-                request_log = prepared_prompt_to_equivalent_request_json(
-                    &fallback,
-                    model_name,
-                    resolved_api.temperature,
-                    resolved_api.max_output_tokens,
-                );
                 if let Some(timeout_secs) = policy.timeout_secs {
                     invoke_model_by_format_with_timeout(
                         resolved_api,
@@ -416,45 +444,42 @@ async fn invoke_model_with_policy(
         }
     }
     let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    match &result {
-        Ok(reply) => {
-            push_llm_round_log(
-                app_state,
-                None,
-                policy.scene,
-                resolved_api.request_format,
-                policy.scene,
-                model_name,
-                &resolved_api.base_url,
-                headers,
-                None,
-                request_log,
-                Some(model_reply_to_log_value(reply)),
-                None,
-                elapsed_ms,
-                None,
-            );
-        }
-        Err(err) => {
-            push_llm_round_log(
-                app_state,
-                None,
-                policy.scene,
-                resolved_api.request_format,
-                policy.scene,
-                model_name,
-                &resolved_api.base_url,
-                headers,
-                None,
-                request_log,
-                None,
-                Some(err.clone()),
-                elapsed_ms,
-                None,
-            );
-        }
-    }
-    result
+    let provider_name = resolved_api
+        .provider_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("unknown-provider")
+        .to_string();
+    let log_parts = match &result {
+        Ok(reply) => ModelCallLogParts {
+            scene: policy.scene,
+            request_format: resolved_api.request_format,
+            provider_name: provider_name.clone(),
+            model_name: model_name.to_string(),
+            base_url: resolved_api.base_url.clone(),
+            headers,
+            tools: None,
+            response: Some(model_reply_to_log_value(reply)),
+            error: None,
+            elapsed_ms,
+            timeline: None,
+        },
+        Err(err) => ModelCallLogParts {
+            scene: policy.scene,
+            request_format: resolved_api.request_format,
+            provider_name,
+            model_name: model_name.to_string(),
+            base_url: resolved_api.base_url.clone(),
+            headers,
+            tools: None,
+            response: None,
+            error: Some(err.clone()),
+            elapsed_ms,
+            timeline: None,
+        },
+    };
+    ModelCallExecutionResult { result, log_parts }
 }
 
 async fn call_archive_summary_model_with_timeout(
@@ -463,7 +488,7 @@ async fn call_archive_summary_model_with_timeout(
     selected_api: &ApiConfig,
     prepared: PreparedPrompt,
     timeout_secs: u64,
-) -> Result<ModelReply, String> {
+) -> ModelCallExecutionResult {
     invoke_model_with_policy(
         resolved_api,
         &selected_api.model,

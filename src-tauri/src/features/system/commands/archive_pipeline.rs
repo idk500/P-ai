@@ -694,14 +694,16 @@ async fn summarize_archived_conversation_with_model_v2(
     prepared.latest_images.clear();
     prepared.latest_audios.clear();
     let timeout_secs = 360u64;
-    let reply = call_archive_summary_model_with_timeout(
+    let archive_summary_execution = call_archive_summary_model_with_timeout(
         state,
         resolved_api,
         selected_api,
         prepared,
         timeout_secs,
     )
-    .await?;
+    .await;
+    push_model_call_log_parts(Some(state), &archive_summary_execution);
+    let reply = archive_summary_execution.result?;
     let parsed = parse_memory_curation_draft(&reply.assistant_text).ok_or_else(|| {
         format!(
             "SummaryContext JSON 解析失败，raw={}",

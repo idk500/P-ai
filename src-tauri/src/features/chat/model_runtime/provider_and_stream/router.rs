@@ -90,7 +90,6 @@ async fn retry_openai_responses_with_system_message_user_fallback(
     on_delta: &tauri::ipc::Channel<AssistantDeltaEvent>,
     max_tool_iterations: usize,
     chat_session_key: &str,
-    request_log: &mut Value,
     tool_manifest_for_log: &mut Option<Value>,
     allow_tools: bool,
 ) -> Result<ModelReply, String> {
@@ -110,12 +109,6 @@ async fn retry_openai_responses_with_system_message_user_fallback(
         "[聊天] 检测到上游不支持 system message，已在本次运行内切换 system->user 降级重试: base_url={}, model={}, err={}",
         api_config.base_url, model_name, err
     ));
-    *request_log = prepared_prompt_to_equivalent_request_json(
-        &fallback,
-        model_name,
-        api_config.temperature,
-        api_config.max_output_tokens,
-    );
     if allow_tools {
         let tool_assembly = prepare_openai_style_tool_assembly(
             app_config,
@@ -334,7 +327,7 @@ async fn call_model_openai_style(
     on_delta: &tauri::ipc::Channel<AssistantDeltaEvent>,
     max_tool_iterations: usize,
     chat_session_key: &str,
-) -> Result<ModelReply, String> {
+) -> ModelCallExecutionResult {
     let mut prepared = prepared;
     let _ = replace_disabled_multimodal_with_text(
         &mut prepared,
@@ -349,12 +342,6 @@ async fn call_model_openai_style(
             app_state,
         );
     }
-    let mut request_log = prepared_prompt_to_equivalent_request_json(
-        &prepared,
-        model_name,
-        api_config.temperature,
-        api_config.max_output_tokens,
-    );
     let headers = masked_auth_headers(&api_config.api_key);
     let mut tool_manifest_for_log: Option<Value> = None;
     let supports_non_stream_fallback =
@@ -366,7 +353,8 @@ async fn call_model_openai_style(
             &api_config.base_url,
             model_name,
         );
-    let result = if selected_api.request_format.is_gemini() {
+    let result: Result<ModelReply, String> = async {
+    if selected_api.request_format.is_gemini() {
         if selected_api.enable_tools
             && prepared.latest_images.is_empty()
             && prepared.latest_audios.is_empty()
@@ -512,7 +500,6 @@ async fn call_model_openai_style(
                         on_delta,
                         max_tool_iterations,
                         chat_session_key,
-                        &mut request_log,
                         &mut tool_manifest_for_log,
                         true,
                     )
@@ -572,12 +559,6 @@ async fn call_model_openai_style(
                     ));
                     let mut fallback = prepared;
                     let _ = replace_disabled_multimodal_with_text(&mut fallback, false, true);
-                    request_log = prepared_prompt_to_equivalent_request_json(
-                        &fallback,
-                        model_name,
-                        api_config.temperature,
-                        api_config.max_output_tokens,
-                    );
                     let tool_assembly = prepare_openai_style_tool_assembly(
                         app_config,
                         selected_api,
@@ -611,53 +592,41 @@ async fn call_model_openai_style(
             "Request format '{}' is not implemented in chat router yet.",
             selected_api.request_format
         ))
-    };
-    let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    match &result {
-        Ok(reply) => {
-            push_llm_round_log(
-                app_state,
-                Some(format!("round-{chat_session_key}")),
-                "chat",
-                selected_api.request_format,
-                &selected_api.name,
-                model_name,
-                &api_config.base_url,
-                headers,
-                tool_manifest_for_log.clone(),
-                request_log,
-                Some(model_reply_to_log_value(reply)),
-                None,
-                elapsed_ms,
-                Some(vec![LlmRoundLogStage {
-                    stage: "model_round_total".to_string(),
-                    elapsed_ms,
-                    since_prev_ms: elapsed_ms,
-                }]),
-            );
-        }
-        Err(err) => {
-            push_llm_round_log(
-                app_state,
-                Some(format!("round-{chat_session_key}")),
-                "chat",
-                selected_api.request_format,
-                &selected_api.name,
-                model_name,
-                &api_config.base_url,
-                headers,
-                tool_manifest_for_log,
-                request_log,
-                None,
-                Some(err.clone()),
-                elapsed_ms,
-                Some(vec![LlmRoundLogStage {
-                    stage: "model_round_total".to_string(),
-                    elapsed_ms,
-                    since_prev_ms: elapsed_ms,
-                }]),
-            );
-        }
     }
-    result
+    }.await;
+    let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let round_timeline = Some(vec![LlmRoundLogStage {
+        stage: "model_round_total".to_string(),
+        elapsed_ms,
+        since_prev_ms: elapsed_ms,
+    }]);
+    let log_parts = match &result {
+        Ok(reply) => ModelCallLogParts {
+            scene: "chat",
+            request_format: selected_api.request_format,
+            provider_name: selected_api.name.clone(),
+            model_name: model_name.to_string(),
+            base_url: api_config.base_url.clone(),
+            headers,
+            tools: tool_manifest_for_log.clone(),
+            response: Some(model_reply_to_log_value(reply)),
+            error: None,
+            elapsed_ms,
+            timeline: round_timeline.clone(),
+        },
+        Err(err) => ModelCallLogParts {
+            scene: "chat",
+            request_format: selected_api.request_format,
+            provider_name: selected_api.name.clone(),
+            model_name: model_name.to_string(),
+            base_url: api_config.base_url.clone(),
+            headers,
+            tools: tool_manifest_for_log,
+            response: None,
+            error: Some(err.clone()),
+            elapsed_ms,
+            timeline: round_timeline,
+        },
+    };
+    ModelCallExecutionResult { result, log_parts }
 }

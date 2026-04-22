@@ -30,7 +30,6 @@ struct LlmRoundLogEntry {
     base_url: String,
     headers: Vec<LlmRoundLogHeader>,
     tools: Option<Value>,
-    request: Value,
     response: Option<Value>,
     error: Option<String>,
     elapsed_ms: u64,
@@ -423,31 +422,6 @@ fn prepared_prompt_to_messages_json(prepared: &PreparedPrompt) -> Vec<Value> {
     messages
 }
 
-fn prepared_prompt_to_equivalent_request_json(
-    prepared: &PreparedPrompt,
-    model_name: &str,
-    temperature: Option<f64>,
-    max_output_tokens: Option<u32>,
-) -> Value {
-    let messages = prepared_prompt_to_messages_json(prepared);
-    let mut request = serde_json::json!({
-        "model": model_name,
-        "stream": true,
-        "messages": messages
-    });
-    if let Some(value) = temperature {
-        if let Some(obj) = request.as_object_mut() {
-            obj.insert("temperature".to_string(), serde_json::json!(value));
-        }
-    }
-    if let Some(value) = max_output_tokens {
-        if let Some(obj) = request.as_object_mut() {
-            obj.insert("max_tokens".to_string(), serde_json::json!(value));
-        }
-    }
-    request
-}
-
 fn model_reply_to_log_value(reply: &ModelReply) -> Value {
     serde_json::json!({
         "assistantText": reply.assistant_text,
@@ -466,7 +440,6 @@ fn build_llm_round_log_entry(
     base_url: &str,
     headers: Vec<LlmRoundLogHeader>,
     tools: Option<Value>,
-    request: Value,
     response: Option<Value>,
     error: Option<String>,
     elapsed_ms: u64,
@@ -484,7 +457,6 @@ fn build_llm_round_log_entry(
         base_url: base_url.to_string(),
         headers,
         tools,
-        request,
         response,
         error: error.filter(|v| !v.trim().is_empty()),
         elapsed_ms,
@@ -496,15 +468,23 @@ fn build_llm_round_log_entry(
     }
 }
 
-fn llm_round_log_group_key(scene: &str, trace_id: Option<&str>, request: &Value) -> Option<String> {
+fn llm_round_log_group_key(
+    scene: &str,
+    trace_id: Option<&str>,
+    group_key: Option<&str>,
+) -> Option<String> {
     match scene {
-        "chat" => trace_id
+        "chat" => group_key
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(|value| value.strip_prefix("round-").unwrap_or(value).to_string()),
-        "chat_pipeline" => request
-            .get("chatSessionKey")
-            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                trace_id
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.strip_prefix("round-").unwrap_or(value).to_string())
+            }),
+        "chat_pipeline" => group_key
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string)
@@ -553,6 +533,7 @@ fn push_display_llm_log(logs: &mut std::collections::VecDeque<LlmRoundLogEntry>,
 fn push_llm_round_log(
     state: Option<&AppState>,
     trace_id: Option<String>,
+    group_key: Option<String>,
     scene: &str,
     request_format: RequestFormat,
     provider_name: &str,
@@ -560,7 +541,6 @@ fn push_llm_round_log(
     base_url: &str,
     headers: Vec<LlmRoundLogHeader>,
     tools: Option<Value>,
-    request: Value,
     response: Option<Value>,
     error: Option<String>,
     elapsed_ms: u64,
@@ -578,14 +558,15 @@ fn push_llm_round_log(
         base_url,
         headers,
         tools,
-        request,
         response,
         error,
         elapsed_ms,
         timeline,
     );
     if scene == "chat" {
-        let Some(group_key) = llm_round_log_group_key(scene, trace_id.as_deref(), &entry.request) else {
+        let Some(group_key) =
+            llm_round_log_group_key(scene, trace_id.as_deref(), group_key.as_deref())
+        else {
             return;
         };
         let Ok(mut pending) = pending_chat_round_buffer().lock() else {
@@ -599,7 +580,7 @@ fn push_llm_round_log(
         return;
     }
     if scene == "chat_pipeline" {
-        let rounds = llm_round_log_group_key(scene, trace_id.as_deref(), &entry.request)
+        let rounds = llm_round_log_group_key(scene, trace_id.as_deref(), group_key.as_deref())
             .and_then(|group_key| {
                 pending_chat_round_buffer()
                     .lock()
@@ -629,11 +610,30 @@ fn push_llm_round_log(
 
 fn latest_chat_round_headers_and_tools(
     state: &AppState,
+    chat_session_key: Option<&str>,
     request_format: RequestFormat,
     provider_name: &str,
     model_name: &str,
     base_url: &str,
 ) -> (Vec<LlmRoundLogHeader>, Option<Value>) {
+    if let Some(group_key) = chat_session_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Ok(pending) = pending_chat_round_buffer().lock() {
+            if let Some(rounds) = pending.rounds_by_chat_session.get(group_key) {
+                if let Some(entry) = rounds.iter().rev().find(|entry| {
+                    entry.scene == "chat"
+                        && entry.request_format == request_format.as_str()
+                        && entry.provider == provider_name
+                        && entry.model == model_name
+                        && entry.base_url == base_url
+                }) {
+                    return (entry.headers.clone(), entry.tools.clone());
+                }
+            }
+        }
+    }
     let Ok(logs) = state.llm_round_logs.lock() else {
         return (Vec::new(), None);
     };

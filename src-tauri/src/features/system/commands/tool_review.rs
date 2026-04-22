@@ -1021,7 +1021,7 @@ async fn submit_tool_review_batch(
         latest_images: Vec::new(),
         latest_audios: Vec::new(),
     };
-    let reply = invoke_model_with_policy(
+    let review_submit_execution = invoke_model_with_policy(
         &resolved_api,
         &selected_api.model,
         prepared,
@@ -1032,7 +1032,9 @@ async fn submit_tool_review_batch(
         },
         Some(state.inner()),
     )
-    .await?;
+    .await;
+    push_model_call_log_parts(Some(state.inner()), &review_submit_execution);
+    let reply = review_submit_execution.result?;
     let report_text = reply.assistant_text.trim().to_string();
     if report_text.is_empty() {
         return Err("最终提交审查未返回内容。".to_string());

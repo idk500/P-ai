@@ -925,13 +925,13 @@ async fn send_chat_message_inner(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
-    let queue_wait_ms = oldest_queue_created_at
+    let _queue_wait_ms = oldest_queue_created_at
         .as_deref()
         .and_then(parse_iso)
         .map(|created_at| (now_utc() - created_at).whole_milliseconds())
         .filter(|ms| *ms > 0)
         .map(|ms| ms.min(i128::from(u64::MAX)) as u64);
-    let session_for_log = input.session.clone();
+    let _session_for_log = input.session.clone();
     let remote_im_activation_sources = input.remote_im_activation_sources.clone();
 
     let chat_started_at = std::time::Instant::now();
@@ -1394,7 +1394,7 @@ async fn send_chat_message_inner(
         }))
     };
 
-    let (app_config, selected_api, resolved_api, effective_department_id, effective_agent_id, candidate_api_ids, preloaded_prepare_snapshot) = {
+    let (app_config, selected_api, resolved_api, _effective_department_id, effective_agent_id, candidate_api_ids, preloaded_prepare_snapshot) = {
         let prepare_started = std::time::Instant::now();
         let mut prepare_detail_parts = Vec::<String>::new();
         let lock_wait_started = std::time::Instant::now();
@@ -2453,7 +2453,7 @@ async fn send_chat_message_inner(
                 attempt + 1
             );
             log_run_stage(&request_start_stage);
-            let reply_result = call_model_openai_style(
+            let chat_round_execution = call_model_openai_style(
                 &candidate_resolved_api,
                 &app_config,
                 &candidate_selected_api,
@@ -2467,6 +2467,22 @@ async fn send_chat_message_inner(
                 &chat_session_key,
             )
             .await;
+            push_llm_round_log(
+                Some(&state),
+                Some(format!("round-{chat_session_key}")),
+                Some(chat_session_key.to_string()),
+                chat_round_execution.log_parts.scene,
+                chat_round_execution.log_parts.request_format,
+                &chat_round_execution.log_parts.provider_name,
+                &chat_round_execution.log_parts.model_name,
+                &chat_round_execution.log_parts.base_url,
+                chat_round_execution.log_parts.headers.clone(),
+                chat_round_execution.log_parts.tools.clone(),
+                chat_round_execution.log_parts.response.clone(),
+                chat_round_execution.log_parts.error.clone(),
+                chat_round_execution.log_parts.elapsed_ms,
+                chat_round_execution.log_parts.timeline.clone(),
+            );
             let request_finish_stage = format!(
                 "model_request.finish[candidate_api_id={},attempt={}]",
                 candidate_selected_api.id,
@@ -2474,7 +2490,7 @@ async fn send_chat_message_inner(
             );
             log_run_stage(&request_finish_stage);
 
-            let (reason_text, final_error_text) = match reply_result {
+            let (reason_text, final_error_text) = match chat_round_execution.result {
                 Ok(reply) => {
                     if model_reply_has_visible_content(&reply) {
                         active_selected_api = candidate_selected_api.clone();
@@ -2844,6 +2860,7 @@ async fn send_chat_message_inner(
     let timeline = stage_timeline.lock().ok().map(|items| items.clone());
     let (mut pipeline_headers, pipeline_tools) = latest_chat_round_headers_and_tools(
         state,
+        Some(&chat_session_key_for_log),
         resolved_api_for_log.request_format,
         &selected_api_for_log.name,
         &selected_api_for_log.model,
@@ -2855,6 +2872,7 @@ async fn send_chat_message_inner(
     push_llm_round_log(
         Some(state),
         Some(trace_id),
+        Some(chat_session_key_for_log.clone()),
         "chat_pipeline",
         resolved_api_for_log.request_format,
         &selected_api_for_log.name,
@@ -2862,15 +2880,6 @@ async fn send_chat_message_inner(
         &resolved_api_for_log.base_url,
         pipeline_headers,
         pipeline_tools,
-        serde_json::json!({
-            "triggerOnly": trigger_only,
-            "queueWaitMs": queue_wait_ms,
-            "oldestQueueCreatedAt": oldest_queue_created_at,
-            "chatSessionKey": chat_session_key_for_log,
-            "effectiveDepartmentId": effective_department_id,
-            "session": session_for_log,
-            "runtimeContext": runtime_context,
-        }),
         final_result
             .as_ref()
             .ok()

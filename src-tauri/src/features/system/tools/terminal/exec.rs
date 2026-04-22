@@ -387,7 +387,7 @@ async fn run_tool_smart_review(
         latest_images: Vec::new(),
         latest_audios: Vec::new(),
     };
-    let reply = invoke_model_with_policy(
+    let review_execution = invoke_model_with_policy(
         &resolved_api,
         &selected_api.model,
         prepared,
@@ -398,7 +398,9 @@ async fn run_tool_smart_review(
         },
         Some(state),
     )
-    .await?;
+    .await;
+    push_model_call_log_parts(Some(state), &review_execution);
+    let reply = review_execution.result?;
     let raw_json = terminal_smart_review_extract_json(&reply.assistant_text);
     let parsed_value = match serde_json::from_str::<Value>(raw_json) {
         Ok(value) => value,

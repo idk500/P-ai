@@ -94,13 +94,6 @@
             </details>
 
             <details class="collapse collapse-arrow bg-base-200 border border-base-300">
-              <summary class="collapse-title text-sm py-2 min-h-0">调度请求</summary>
-              <div class="collapse-content text-sm">
-                <pre class="whitespace-pre-wrap break-all">{{ toPretty(entry.request) }}</pre>
-              </div>
-            </details>
-
-            <details class="collapse collapse-arrow bg-base-200 border border-base-300">
               <summary class="collapse-title text-sm py-2 min-h-0">调度响应</summary>
               <div class="collapse-content text-sm">
                 <pre class="whitespace-pre-wrap break-all">{{ toPretty(entry.response ?? null) }}</pre>
@@ -111,7 +104,7 @@
               <div class="flex items-center justify-between gap-2">
                 <div class="text-sm font-medium">轮次（{{ entry.rounds?.length ?? 0 }}）</div>
                 <div class="text-xs opacity-60">
-                  点击某一轮查看 Request / Response / Tools / Headers / Error
+                  点击某一轮查看 Response / Tools / Headers / Error
                 </div>
               </div>
               <div v-if="entry.rounds?.length" class="space-y-2">
@@ -193,13 +186,6 @@
               <summary class="collapse-title text-sm py-2 min-h-0">Tools</summary>
               <div class="collapse-content text-sm">
                 <pre class="whitespace-pre-wrap break-all">{{ toPretty(entry.tools ?? null) }}</pre>
-              </div>
-            </details>
-
-            <details class="collapse collapse-arrow bg-base-200 border border-base-300">
-              <summary class="collapse-title text-sm py-2 min-h-0">Request</summary>
-              <div class="collapse-content text-sm">
-                <pre class="whitespace-pre-wrap break-all">{{ toPretty(entry.request) }}</pre>
               </div>
             </details>
 
@@ -295,13 +281,12 @@ const selectedRound = ref<{
   index: number;
 } | null>(null);
 const roundDetailTabs = [
-  { id: "request", label: "Request" },
   { id: "response", label: "Response" },
   { id: "tools", label: "Tools" },
   { id: "headers", label: "Headers" },
   { id: "error", label: "Error" },
 ] as const;
-const activeRoundTab = ref<(typeof roundDetailTabs)[number]["id"]>("request");
+const activeRoundTab = ref<(typeof roundDetailTabs)[number]["id"]>("response");
 
 const pipelineLogs = computed(() =>
   logs.value.filter((entry) => entry.scene === "chat_pipeline"),
@@ -338,7 +323,7 @@ function totalToolCallsForRounds(rounds?: LlmRoundLogEntry[]): number {
 
 function openRound(pipeline: LlmRoundLogEntry, round: LlmRoundLogEntry, index: number) {
   selectedRound.value = { pipeline, round, index };
-  activeRoundTab.value = "request";
+  activeRoundTab.value = "response";
 }
 
 function closeRound() {
@@ -349,9 +334,6 @@ function roundTabContent(
   entry: LlmRoundLogEntry,
   tab: (typeof roundDetailTabs)[number]["id"],
 ): string {
-  if (tab === "request") {
-    return toPretty(entry.request);
-  }
   if (tab === "response") {
     return toPretty(entry.response ?? null);
   }
@@ -377,7 +359,6 @@ async function reload() {
         model: "-",
         baseUrl: "",
         headers: [],
-        request: null,
         tools: null,
         response: null,
         error: toErrorMessage(error),

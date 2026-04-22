@@ -315,7 +315,6 @@ export type LlmRoundLogEntry = {
   baseUrl: string;
   headers: LlmRoundLogHeader[];
   tools?: unknown;
-  request: unknown;
   response?: unknown;
   error?: string;
   elapsedMs: number;
