@@ -335,12 +335,7 @@ fn export_archive_to_file(
         _ => return Err("Unsupported export format. Use 'json' or 'markdown'.".to_string()),
     };
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let data = state_read_app_data_cached(&state)?;
-    drop(guard);
 
     let archive = data
         .conversations
@@ -403,58 +398,13 @@ fn import_archives_from_json(
         return Err("No archives found in payload.".to_string());
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut data = state_read_app_data_cached(&state)?;
-    let data_before = data.clone();
-
-    let mut index_by_conversation_id = std::collections::HashMap::<String, usize>::new();
-    for (idx, conv) in data.conversations.iter().enumerate() {
-        index_by_conversation_id.insert(conv.id.clone(), idx);
-    }
-
-    let mut imported_count = 0usize;
-    let mut replaced_count = 0usize;
-    let mut skipped_count = 0usize;
-    let mut selected_archive_id: Option<String> = None;
-    let mut seen_conversation_ids = std::collections::HashSet::<String>::new();
-
-    for archive in &mut incoming_archives {
-        normalize_archive_for_import(archive, &state.data_path);
-    }
-
-    for archive in incoming_archives {
-        let archive_id = archive.archive_id.clone();
-        let conversation = archive_to_conversation(archive);
-        let conversation_id = conversation.id.clone();
-        if !seen_conversation_ids.insert(conversation_id.clone()) {
-            skipped_count += 1;
-            continue;
-        }
-        if let Some(idx) = index_by_conversation_id.get(&conversation_id).copied() {
-            data.conversations[idx] = conversation;
-            replaced_count += 1;
-        } else {
-            data.conversations.push(conversation);
-            index_by_conversation_id.insert(conversation_id, data.conversations.len() - 1);
-            imported_count += 1;
-        }
-        if selected_archive_id.is_none() {
-            selected_archive_id = Some(archive_id);
-        }
-    }
-
-    persist_app_data_conversation_runtime_delta(&state, &data_before, &data)?;
-    drop(guard);
-
+    let result = conversation_service().import_archives(state.inner(), &mut incoming_archives)?;
     Ok(ImportArchivesResult {
-        imported_count,
-        replaced_count,
-        skipped_count,
-        total_count: archived_conversations_from_data(&data).len(),
-        selected_archive_id,
+        imported_count: result.imported_count,
+        replaced_count: result.replaced_count,
+        skipped_count: result.skipped_count,
+        total_count: result.total_count,
+        selected_archive_id: result.selected_archive_id,
     })
 }
 

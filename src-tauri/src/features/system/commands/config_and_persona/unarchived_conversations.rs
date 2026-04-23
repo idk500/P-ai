@@ -9,55 +9,10 @@ fn switch_active_conversation_snapshot(
     state: State<'_, AppState>,
 ) -> Result<SwitchActiveConversationSnapshotOutput, String> {
     let started_at = std::time::Instant::now();
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
-    let app_config = state_read_config_cached(&state)?;
-    let mut data = state_read_app_data_cached(&state)?;
-    let normalized_changed = normalize_single_active_main_conversation(&mut data);
-    let department_changed = normalize_foreground_conversation_departments(&app_config, &mut data);
-    let target_idx = resolve_foreground_snapshot_target_index(&input, &app_config, &mut data)?;
-    let target_conversation_id = data
-        .conversations
-        .get(target_idx)
-        .map(|item| item.id.clone())
-        .ok_or_else(|| "Unarchived conversation index out of bounds.".to_string())?;
-    ensure_unarchived_conversation_not_organizing(state.inner(), &target_conversation_id)?;
-
-    let mut changed = normalized_changed || department_changed;
-    for conversation in data.conversations.iter_mut() {
-        if !conversation_visible_in_foreground_lists(conversation) || !conversation.summary.trim().is_empty() {
-            continue;
-        }
-        if conversation.status.trim() != "active" {
-            conversation.status = "active".to_string();
-            changed = true;
-        }
-    }
-
-    let mut snapshot = build_foreground_conversation_snapshot_core(
-        state.inner(),
-        &data,
-        target_idx,
-        SWITCH_SNAPSHOT_RECENT_LIMIT,
-    )?;
-    let unarchived_conversations =
-        collect_unarchived_conversation_summaries(state.inner(), &app_config, &data);
-
-    if changed {
-        let target_ids = foreground_conversation_ids(&data);
-        persist_selected_conversations_and_runtime(
-            &state,
-            &data,
-            &target_ids,
-            "switch_active_conversation_snapshot",
-        )?;
-    }
-    drop(guard);
-
-    materialize_chat_message_parts_from_media_refs(&mut snapshot.messages, &state.data_path);
+    let result =
+        conversation_service().switch_active_conversation_snapshot(state.inner(), &input)?;
+    let snapshot = result.snapshot;
+    let unarchived_conversations = result.unarchived_conversations;
     runtime_log_info(format!(
         "[前台重型快照] 完成，conversation_id={}，message_count={}，has_more_history={}，summary_count={}，duration_ms={}",
         snapshot.conversation_id,
@@ -78,145 +33,18 @@ fn switch_active_conversation_snapshot(
     })
 }
 
-fn resolve_foreground_snapshot_target_index(
-    input: &SwitchActiveConversationSnapshotInput,
-    app_config: &AppConfig,
-    data: &mut AppData,
-) -> Result<usize, String> {
-    let requested_conversation_id = input
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let effective_agent_id = input
-        .agent_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| data.assistant_department_agent_id.clone());
-    resolve_unarchived_conversation_index_with_fallback(
-        data,
-        app_config,
-        &effective_agent_id,
-        requested_conversation_id,
-    )
-}
-
-fn build_foreground_conversation_snapshot_core(
-    state: &AppState,
-    data: &AppData,
-    target_idx: usize,
-    recent_limit: usize,
-) -> Result<ForegroundConversationSnapshotCore, String> {
-    let conversation = data
-        .conversations
-        .get(target_idx)
-        .ok_or_else(|| "Unarchived conversation index out of bounds.".to_string())?;
-    let total_messages = conversation.messages.len();
-    let start = total_messages.saturating_sub(recent_limit);
-    let messages = conversation.messages[start..].to_vec();
-    Ok(ForegroundConversationSnapshotCore {
-        conversation_id: conversation.id.clone(),
-        messages,
-        has_more_history: start > 0,
-        runtime_state: unarchived_conversation_runtime_state(state, &conversation.id),
-        current_todo: conversation_current_todo_text(conversation),
-        current_todos: conversation.current_todos.clone(),
-    })
-}
-
-fn build_foreground_conversation_snapshot_from_conversation(
-    state: &AppState,
-    conversation: &Conversation,
-    recent_limit: usize,
-) -> Result<ForegroundConversationSnapshotCore, String> {
-    let total_messages = conversation.messages.len();
-    let start = total_messages.saturating_sub(recent_limit);
-    let messages = conversation.messages[start..].to_vec();
-    Ok(ForegroundConversationSnapshotCore {
-        conversation_id: conversation.id.clone(),
-        messages,
-        has_more_history: start > 0,
-        runtime_state: unarchived_conversation_runtime_state(state, &conversation.id),
-        current_todo: conversation_current_todo_text(conversation),
-        current_todos: conversation.current_todos.clone(),
-    })
-}
-
 #[tauri::command]
 fn get_foreground_conversation_light_snapshot(
     input: ForegroundConversationLightSnapshotInput,
     state: State<'_, AppState>,
 ) -> Result<ForegroundConversationLightSnapshotOutput, String> {
     let started_at = std::time::Instant::now();
-    let direct_conversation_id = input
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-
-    if let Some(conversation_id) = direct_conversation_id {
-        let mut snapshot = with_unarchived_conversation_by_id(state.inner(), &conversation_id, |conversation| {
-            ensure_unarchived_conversation_not_organizing(state.inner(), &conversation.id)?;
-            build_foreground_conversation_snapshot_from_conversation(
-                state.inner(),
-                conversation,
-                SWITCH_SNAPSHOT_RECENT_LIMIT,
-            )
-        })?;
-
-        materialize_chat_message_parts_from_media_refs(&mut snapshot.messages, &state.data_path);
-        runtime_log_info(format!(
-            "[前台轻量快照] 完成，conversation_id={}，message_count={}，has_more_history={}，duration_ms={}",
-            snapshot.conversation_id,
-            snapshot.messages.len(),
-            snapshot.has_more_history,
-            started_at.elapsed().as_millis()
-        ));
-
-        return Ok(ForegroundConversationLightSnapshotOutput {
-            conversation_id: snapshot.conversation_id,
-            messages: snapshot.messages,
-            has_more_history: snapshot.has_more_history,
-            runtime_state: snapshot.runtime_state,
-            current_todo: snapshot.current_todo,
-            current_todos: snapshot.current_todos,
-        });
-    }
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
-    let app_config = state_read_config_cached(&state)?;
-    let mut data = state_read_app_data_cached(&state)?;
-    let target_idx = resolve_foreground_snapshot_target_index(
-        &SwitchActiveConversationSnapshotInput {
-            conversation_id: input.conversation_id.clone(),
-            agent_id: input.agent_id.clone(),
-        },
-        &app_config,
-        &mut data,
-    )?;
-    let target_conversation_id = data
-        .conversations
-        .get(target_idx)
-        .map(|item| item.id.clone())
-        .ok_or_else(|| "Unarchived conversation index out of bounds.".to_string())?;
-    ensure_unarchived_conversation_not_organizing(state.inner(), &target_conversation_id)?;
-
-    let mut snapshot = build_foreground_conversation_snapshot_core(
+    let snapshot = conversation_service().read_foreground_snapshot(
         state.inner(),
-        &data,
-        target_idx,
+        input.conversation_id.as_deref(),
+        input.agent_id.as_deref(),
         SWITCH_SNAPSHOT_RECENT_LIMIT,
     )?;
-    drop(guard);
-
-    materialize_chat_message_parts_from_media_refs(&mut snapshot.messages, &state.data_path);
     runtime_log_info(format!(
         "[前台轻量快照] 完成，conversation_id={}，message_count={}，has_more_history={}，duration_ms={}",
         snapshot.conversation_id,
@@ -564,110 +392,11 @@ fn create_unarchived_conversation(
     input: CreateUnarchivedConversationInput,
     state: State<'_, AppState>,
 ) -> Result<CreateUnarchivedConversationOutput, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
-    let app_config = state_read_config_cached(&state)?;
-    let mut data = state_read_app_data_cached(&state)?;
-    let requested_department_id = input
-        .department_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let department = if let Some(department_id) = requested_department_id {
-        department_by_id(&app_config, department_id)
-            .ok_or_else(|| format!("Department '{department_id}' not found."))?
-    } else {
-        assistant_department(&app_config)
-            .ok_or_else(|| "No assistant department configured.".to_string())?
-    };
-    let api_config_id = input
-        .api_config_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| department_primary_api_config_id(department));
-    let agent_id = input
-        .agent_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .or_else(|| {
-            department
-                .agent_ids
-                .iter()
-                .find(|id| !id.trim().is_empty())
-                .cloned()
-        })
-        .unwrap_or_else(|| data.assistant_department_agent_id.clone());
-    let conversation_title = input
-        .title
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or_default();
-    let copy_source_conversation_id = trimmed_option(input.copy_source_conversation_id.as_deref());
-
-    for conversation in &mut data.conversations {
-        if !conversation_visible_in_foreground_lists(conversation) || !conversation.summary.trim().is_empty() {
-            continue;
-        }
-        conversation.status = "active".to_string();
-    }
-    let conversation = if let Some(source_conversation_id) = copy_source_conversation_id.as_deref() {
-        let source_conversation = data
-            .conversations
-            .iter()
-            .find(|conversation| {
-                conversation.id == source_conversation_id
-                    && conversation.summary.trim().is_empty()
-                    && conversation_visible_in_foreground_lists(conversation)
-            })
-            .cloned()
-            .ok_or_else(|| "要复制的当前会话不存在或已归档".to_string())?;
-        clone_foreground_conversation_for_copy(
-            &source_conversation,
-            &agent_id,
-            &department.id,
-            conversation_title,
-        )
-    } else {
-        build_foreground_chat_conversation_record(
-            &state.data_path,
-            &data,
-            &api_config_id,
-            &agent_id,
-            &department.id,
-            conversation_title,
-        )
-    };
-    let conversation_id = conversation.id.clone();
-    data.conversations.push(conversation);
-    if data
-        .main_conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_none()
-    {
-        data.main_conversation_id = Some(conversation_id.clone());
-    }
-    let overview_payload =
-        build_unarchived_conversation_overview_payload(state.inner(), &app_config, &data);
-    persist_selected_conversations_and_runtime(
-        state.inner(),
-        &data,
-        std::slice::from_ref(&conversation_id),
-        "create_unarchived_conversation",
-    )?;
-    drop(guard);
-    emit_unarchived_conversation_overview_updated_payload(state.inner(), &overview_payload);
-
-    Ok(CreateUnarchivedConversationOutput { conversation_id })
+    let result = conversation_service().create_unarchived_conversation(state.inner(), &input)?;
+    emit_unarchived_conversation_overview_updated_payload(state.inner(), &result.overview_payload);
+    Ok(CreateUnarchivedConversationOutput {
+        conversation_id: result.conversation_id,
+    })
 }
 
 #[tauri::command]
@@ -690,111 +419,23 @@ async fn branch_unarchived_conversation_from_selection(
         return Err("selectedMessageIds 不能为空".to_string());
     }
 
-    let (
-        app_config,
-        source_conversation,
-        selected_messages,
-        branched_title,
-        department,
-        latest_compaction_message,
-    ) = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-        let app_config = state_read_config_cached(&state)?;
-        let data = state_read_app_data_cached(&state)?;
-        let source_conversation = data
-            .conversations
-            .iter()
-            .find(|conversation| {
-                conversation.id == source_conversation_id
-                    && conversation.summary.trim().is_empty()
-                    && conversation_visible_in_foreground_lists(conversation)
-            })
-            .cloned()
-            .ok_or_else(|| "源会话不存在或已归档".to_string())?;
-        let (selected_messages, first_selected_ordinal) =
-            collect_selected_messages_for_branch(&source_conversation, &normalized_selected_message_ids);
-        if selected_messages.is_empty() {
-            drop(guard);
-            return Err("未找到可创建会话分支的已选消息".to_string());
-        }
-        let department = department_by_id(&app_config, source_conversation.department_id.trim())
-            .cloned()
-            .ok_or_else(|| "源会话所属部门不存在".to_string())?;
-        let branched_title = build_branch_conversation_title(
-            &source_conversation.title,
-            first_selected_ordinal.max(1),
-            data.main_conversation_id.as_deref().map(str::trim)
-                == Some(source_conversation.id.as_str()),
-        );
-        let latest_compaction_message = latest_compaction_message_for_branch(&source_conversation);
-        drop(guard);
-        (
-            app_config,
-            source_conversation,
-            selected_messages,
-            branched_title,
-            department,
-            latest_compaction_message,
-        )
-    };
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut data = state_read_app_data_cached(&state)?;
-    if !data.conversations.iter().any(|conversation| {
-        conversation.id == source_conversation.id
-            && conversation.summary.trim().is_empty()
-            && conversation_visible_in_foreground_lists(conversation)
-    }) {
-        drop(guard);
-        return Err("源会话已变化，请重新选择消息后再试".to_string());
-    }
-    let conversation = build_branch_conversation_record_from_selection(
-        &state.data_path,
-        &data,
-        &source_conversation,
-        &department,
-        &branched_title,
-        latest_compaction_message.as_ref(),
-        &selected_messages,
-    );
-    let conversation_id = conversation.id.clone();
-    data.conversations.push(conversation);
-    if data
-        .main_conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_none()
-    {
-        data.main_conversation_id = Some(conversation_id.clone());
-    }
-    let overview_payload =
-        build_unarchived_conversation_overview_payload(state.inner(), &app_config, &data);
-    persist_selected_conversations_and_runtime(
+    let result = conversation_service().branch_unarchived_conversation_from_selection(
         state.inner(),
-        &data,
-        std::slice::from_ref(&conversation_id),
-        "branch_unarchived_conversation_from_selection",
+        source_conversation_id,
+        &normalized_selected_message_ids,
     )?;
-    drop(guard);
-    emit_unarchived_conversation_overview_updated_payload(state.inner(), &overview_payload);
+    emit_unarchived_conversation_overview_updated_payload(state.inner(), &result.overview_payload);
     runtime_log_info(format!(
         "[会话分支] 完成，任务=按已选消息创建会话分支，source_conversation_id={}，conversation_id={}，selected_count={}，has_compaction_seed={}",
-        source_conversation.id,
-        conversation_id,
-        selected_messages.len(),
-        latest_compaction_message.is_some()
+        source_conversation_id,
+        result.conversation_id,
+        result.selected_count,
+        result.has_compaction_seed
     ));
 
     Ok(BranchUnarchivedConversationFromSelectionOutput {
-        conversation_id,
-        title: branched_title,
+        conversation_id: result.conversation_id,
+        title: result.title,
         warning: None,
     })
 }
@@ -826,93 +467,23 @@ fn forward_unarchived_conversation_selection(
         return Err("selectedMessageIds 不能为空".to_string());
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let target_runtime_state = {
-        let runtime_slots = lock_conversation_runtime_slots(state.inner())?;
-        runtime_slots
-            .get(target_conversation_id)
-            .map(|slot| slot.state.clone())
-            .unwrap_or(MainSessionState::Idle)
-    };
-    if target_runtime_state == MainSessionState::AssistantStreaming {
-        drop(guard);
-        return Err("目标会话正在流式输出中，暂时无法转发到会话".to_string());
-    }
-    if target_runtime_state == MainSessionState::OrganizingContext {
-        drop(guard);
-        return Err("目标会话正在整理上下文，暂时无法转发到会话".to_string());
-    }
-    let app_config = state_read_config_cached(&state)?;
-    let mut data = state_read_app_data_cached(&state)?;
-
-    let source_conversation = data
-        .conversations
-        .iter()
-        .find(|conversation| {
-            conversation.id == source_conversation_id
-                && conversation.summary.trim().is_empty()
-                && conversation_visible_in_foreground_lists(conversation)
-        })
-        .cloned()
-        .ok_or_else(|| "源会话不存在或已归档".to_string())?;
-    let (selected_messages, _) =
-        collect_selected_messages_for_branch(&source_conversation, &normalized_selected_message_ids);
-    if selected_messages.is_empty() {
-        drop(guard);
-        return Err("未找到可转发到会话的已选消息".to_string());
-    }
-
-    let target_idx = data
-        .conversations
-        .iter()
-        .position(|conversation| {
-            conversation.id == target_conversation_id
-                && conversation.summary.trim().is_empty()
-                && conversation_visible_in_foreground_lists(conversation)
-        })
-        .ok_or_else(|| "目标会话不存在或已归档".to_string())?;
-
-    let now = now_iso();
-    {
-        let target_conversation = data
-            .conversations
-            .get_mut(target_idx)
-            .ok_or_else(|| "目标会话索引无效".to_string())?;
-        target_conversation.messages.extend(
-            selected_messages
-                .iter()
-                .map(clone_chat_message_for_copied_conversation),
-        );
-        target_conversation.updated_at = now.clone();
-        target_conversation.status = "active".to_string();
-        if let Some(last_message) = target_conversation.messages.last() {
-            target_conversation.last_read_message_id = last_message.id.clone();
-            if last_message.role.trim().eq_ignore_ascii_case("assistant") {
-                target_conversation.last_assistant_at = Some(now.clone());
-            } else if last_message.role.trim().eq_ignore_ascii_case("user") {
-                target_conversation.last_user_at = Some(now.clone());
-            }
-        }
-    }
-
-    let overview_payload =
-        build_unarchived_conversation_overview_payload(state.inner(), &app_config, &data);
-    persist_single_conversation_runtime_fast(state.inner(), &data, target_conversation_id)?;
-    drop(guard);
-    emit_unarchived_conversation_overview_updated_payload(state.inner(), &overview_payload);
+    let result = conversation_service().forward_unarchived_conversation_selection(
+        state.inner(),
+        source_conversation_id,
+        target_conversation_id,
+        &normalized_selected_message_ids,
+    )?;
+    emit_unarchived_conversation_overview_updated_payload(state.inner(), &result.overview_payload);
     runtime_log_info(format!(
         "[转发到会话] 完成，任务=转发已选消息到目标会话，source_conversation_id={}，target_conversation_id={}，message_count={}",
         source_conversation_id,
-        target_conversation_id,
-        selected_messages.len()
+        result.target_conversation_id,
+        result.forwarded_count
     ));
 
     Ok(ForwardUnarchivedConversationSelectionOutput {
-        target_conversation_id: target_conversation_id.to_string(),
-        forwarded_count: selected_messages.len(),
+        target_conversation_id: result.target_conversation_id,
+        forwarded_count: result.forwarded_count,
     })
 }
 
@@ -929,47 +500,14 @@ fn rename_unarchived_conversation(
     if next_title.is_empty() {
         return Err("会话标题不能为空".to_string());
     }
+    let next_title = conversation_service().rename_unarchived_conversation(
+        state.inner(),
+        conversation_id,
+        &next_title,
+    )?;
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
-    let app_config = state_read_config_cached(&state)?;
-    let runtime = state_read_runtime_state_cached(&state)?;
-    let main_conversation_id = runtime
-        .main_conversation_id
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_string();
-    if conversation_id == main_conversation_id {
-        drop(guard);
-        return Err("主会话暂不支持改名".to_string());
-    }
-    ensure_unarchived_conversation_not_organizing(state.inner(), conversation_id)?;
-
-    let mut conversation = state_read_conversation_cached(&state, conversation_id)?;
-    if !conversation.summary.trim().is_empty()
-        || !conversation_visible_in_foreground_lists(&conversation)
-    {
-        drop(guard);
-        return Err("未找到可改名的会话".to_string());
-    }
-
-    if conversation.title.trim() == next_title {
-        drop(guard);
-        return Ok(RenameUnarchivedConversationOutput {
-            conversation_id: conversation_id.to_string(),
-            title: next_title,
-        });
-    }
-
-    conversation.title = next_title.clone();
-    state_write_conversation_cached(&state, &conversation)?;
-    let data = state_read_app_data_cached(&state)?;
-    let overview_payload = build_unarchived_conversation_overview_payload(state.inner(), &app_config, &data);
-    drop(guard);
+    let overview_payload =
+        conversation_service().refresh_unarchived_conversation_overview_payload(state.inner())?;
 
     runtime_log_info(format!(
         "[会话] 完成，任务=重命名会话，conversation_id={}，title={}",
@@ -988,73 +526,26 @@ fn toggle_unarchived_conversation_pin(
     input: ToggleUnarchivedConversationPinInput,
     state: State<'_, AppState>,
 ) -> Result<ToggleUnarchivedConversationPinOutput, String> {
-    let conversation_id = input.conversation_id.trim();
-    if conversation_id.is_empty() {
-        return Err("conversationId 不能为空".to_string());
-    }
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
-    let mut data = state_read_app_data_cached(&state)?;
-    let main_conversation_id = data
-        .main_conversation_id
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_string();
-    if conversation_id == main_conversation_id {
-        drop(guard);
-        return Err("主会话始终置顶".to_string());
-    }
-
-    let Some(conversation) = data.conversations.iter().find(|item| item.id.trim() == conversation_id) else {
-        drop(guard);
-        return Err("未找到可置顶的会话".to_string());
-    };
-    if !conversation.summary.trim().is_empty() || !conversation_visible_in_foreground_lists(conversation) {
-        drop(guard);
-        return Err("未找到可置顶的会话".to_string());
-    }
-
-    let previous_pinned = normalized_pinned_conversation_ids(&data);
-    let mut next_pinned = previous_pinned.clone();
-    if let Some(index) = next_pinned.iter().position(|item| item.trim() == conversation_id) {
-        next_pinned.remove(index);
-    } else {
-        next_pinned.insert(0, conversation_id.to_string());
-    }
-    data.pinned_conversation_ids = next_pinned.clone();
-
-    persist_runtime_state_only(
+    let result = conversation_service().toggle_unarchived_conversation_pin(
         state.inner(),
-        &data,
-        "toggle_unarchived_conversation_pin",
+        &input.conversation_id,
     )?;
-    drop(guard);
-
-    let is_pinned = next_pinned.iter().any(|item| item.trim() == conversation_id);
-    let pin_index = next_pinned
-        .iter()
-        .position(|item| item.trim() == conversation_id);
     runtime_log_info(format!(
         "[会话] 完成，任务=切换会话置顶，conversation_id={}，is_pinned={}",
-        conversation_id, is_pinned
+        result.conversation_id, result.is_pinned
     ));
     emit_conversation_pin_updated_payload(
         state.inner(),
         &ConversationPinUpdatedPayload {
-            conversation_id: conversation_id.to_string(),
-            is_pinned,
-            pin_index,
+            conversation_id: result.conversation_id.clone(),
+            is_pinned: result.is_pinned,
+            pin_index: result.pin_index,
         },
     );
 
     Ok(ToggleUnarchivedConversationPinOutput {
-        conversation_id: conversation_id.to_string(),
-        is_pinned,
+        conversation_id: result.conversation_id,
+        is_pinned: result.is_pinned,
     })
 }
 
@@ -1118,26 +609,7 @@ fn get_unarchived_conversation_messages(
     if conversation_id.is_empty() {
         return Err("conversationId is required.".to_string());
     }
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let data = state_read_app_data_cached(&state)?;
-    drop(guard);
-
-    let requested_messages = data
-        .conversations
-        .iter()
-        .find(|c| c.summary.trim().is_empty() && conversation_visible_in_foreground_lists(c) && c.id == conversation_id)
-        .map(|c| c.messages.clone());
-    let fallback_messages = latest_active_conversation_index(&data, "", "")
-        .and_then(|idx| data.conversations.get(idx))
-        .map(|c| c.messages.clone());
-    let mut messages = requested_messages
-        .or(fallback_messages)
-        .ok_or_else(|| "Unarchived conversation not found.".to_string())?;
-    materialize_chat_message_parts_from_media_refs(&mut messages, &state.data_path);
-    Ok(messages)
+    conversation_service().read_unarchived_messages(state.inner(), conversation_id)
 }
 
 #[tauri::command]
@@ -1149,26 +621,11 @@ fn get_unarchived_conversation_recent_messages(
     if conversation_id.is_empty() {
         return Err("conversationId is required.".to_string());
     }
-    let limit = input.limit.clamp(1, 50);
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let data = state_read_app_data_cached(&state)?;
-    drop(guard);
-
-    let mut messages = data
-        .conversations
-        .iter()
-        .find(|c| c.summary.trim().is_empty() && conversation_visible_in_foreground_lists(c) && c.id == conversation_id)
-        .map(|c| {
-            let total = c.messages.len();
-            let start = total.saturating_sub(limit);
-            c.messages[start..].to_vec()
-        })
-        .ok_or_else(|| "Unarchived conversation not found.".to_string())?;
-    materialize_chat_message_parts_from_media_refs(&mut messages, &state.data_path);
-    Ok(messages)
+    conversation_service().read_recent_unarchived_messages(
+        state.inner(),
+        conversation_id,
+        input.limit,
+    )
 }
 
 #[tauri::command]
@@ -1184,17 +641,7 @@ fn get_unarchived_conversation_message_by_id(
     if message_id.is_empty() {
         return Err("messageId is required.".to_string());
     }
-
-    let mut message = with_unarchived_conversation_by_id(state.inner(), conversation_id, |conversation| {
-        conversation
-            .messages
-            .iter()
-            .find(|item| item.id.trim() == message_id)
-            .cloned()
-            .ok_or_else(|| format!("Message not found: {message_id}"))
-    })?;
-    materialize_chat_message_parts_from_media_refs(std::slice::from_mut(&mut message), &state.data_path);
-    Ok(message)
+    conversation_service().read_message_by_id(state.inner(), conversation_id, message_id)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1246,97 +693,40 @@ fn delete_unarchived_conversation(
         "[会话] 开始，任务=delete_unarchived_conversation，action=delete_unarchived_convo，convo_id={}",
         conversation_id
     ));
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let app_config = state_read_config_cached(&state)?;
-    let runtime = state_read_runtime_state_cached(&state)?;
-    let main_conversation_id = runtime
-        .main_conversation_id
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_string();
-    if conversation_id == main_conversation_id {
-        drop(guard);
-        runtime_log_info(format!(
-            "[会话] 跳过，任务=delete_unarchived_conversation，action=delete_unarchived_convo，convo_id={}，reason=main_conversation_locked，duration_ms={}",
-            conversation_id,
-            started_at.elapsed().as_millis()
-        ));
-        return Err("主会话暂不支持删除".to_string());
-    }
-    let mut data = state_read_app_data_cached(&state)?;
-    let before = data.conversations.len();
-    data.conversations.retain(|conversation| {
-        !(conversation.id == conversation_id
-            && conversation.summary.trim().is_empty()
-            && conversation_visible_in_foreground_lists(conversation))
-    });
-    if data.conversations.len() == before {
-        drop(guard);
-        runtime_log_info(format!(
-            "[会话] 失败，任务=delete_unarchived_conversation，action=delete_unarchived_convo，convo_id={}，reason=not_found，duration_ms={}",
-            conversation_id,
-            started_at.elapsed().as_millis()
-        ));
-        return Err("Unarchived conversation not found.".to_string());
-    }
-    let _ = normalize_single_active_main_conversation(&mut data);
-    let active_conversation_id = data
-        .conversations
-        .iter()
-        .find(|conversation| {
-            conversation.summary.trim().is_empty()
-                && conversation_visible_in_foreground_lists(conversation)
-                && conversation.status.trim() == "active"
-        })
-        .map(|conversation| conversation.id.clone())
-        .or_else(|| {
-            data.conversations
-                .iter()
-                .find(|conversation| {
-                    conversation.summary.trim().is_empty()
-                        && conversation_visible_in_foreground_lists(conversation)
-                })
-                .map(|conversation| conversation.id.clone())
-        })
-        .unwrap_or_default();
-    mark_tasks_as_session_lost(&state.data_path, conversation_id);
-    if active_conversation_id.trim().is_empty() {
-        drop(guard);
-        runtime_log_info(format!(
-            "[会话] 失败，任务=delete_unarchived_conversation，action=delete_unarchived_convo，convo_id={}，reason=no_active_conversation_after_delete，duration_ms={}",
-            conversation_id,
-            started_at.elapsed().as_millis()
-        ));
-        return Err("删除后未找到可用会话".to_string());
-    }
-    let overview_payload =
-        build_unarchived_conversation_overview_payload(state.inner(), &app_config, &data);
-    let mut target_conversation_ids = Vec::<String>::new();
-    if !active_conversation_id.trim().is_empty() {
-        target_conversation_ids.push(active_conversation_id.clone());
-    }
-    persist_removed_and_selected_conversations_and_runtime(
+    let result = match conversation_service().delete_unarchived_conversation(
         state.inner(),
-        &data,
-        std::slice::from_ref(&conversation_id.to_string()),
-        &target_conversation_ids,
-        "delete_unarchived_conversation",
-    )?;
+        conversation_id,
+    ) {
+        Ok(result) => result,
+        Err(err) => {
+            let reason = if err.contains("主会话暂不支持删除") {
+                "main_conversation_locked"
+            } else if err.contains("Unarchived conversation not found") {
+                "not_found"
+            } else if err.contains("删除后未找到可用会话") {
+                "no_active_conversation_after_delete"
+            } else {
+                "delete_failed"
+            };
+            runtime_log_info(format!(
+                "[会话] 失败，任务=delete_unarchived_conversation，action=delete_unarchived_convo，convo_id={}，reason={}，duration_ms={}",
+                conversation_id,
+                reason,
+                started_at.elapsed().as_millis()
+            ));
+            return Err(err);
+        }
+    };
     runtime_log_info(format!(
         "[会话] 完成，任务=delete_unarchived_conversation，action=delete_unarchived_convo，convo_id={}，duration_ms={}",
         conversation_id,
         started_at.elapsed().as_millis()
     ));
-    drop(guard);
-    emit_unarchived_conversation_overview_updated_payload(state.inner(), &overview_payload);
+    emit_unarchived_conversation_overview_updated_payload(state.inner(), &result.overview_payload);
     cleanup_pdf_session_memory_cache_for_conversation(conversation_id);
     Ok(DeleteUnarchivedConversationOutput {
-        deleted_conversation_id: conversation_id.to_string(),
-        active_conversation_id,
+        deleted_conversation_id: result.deleted_conversation_id,
+        active_conversation_id: result.active_conversation_id,
     })
 }
 
@@ -1345,60 +735,7 @@ fn get_active_conversation_messages(
     input: SessionSelector,
     state: State<'_, AppState>,
 ) -> Result<Vec<ChatMessage>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
-    let mut app_config = state_read_config_cached(&state)?;
-
-    let mut data = state_read_app_data_cached(&state)?;
-    let _normalized_changed = normalize_single_active_main_conversation(&mut data);
-    let _department_changed = normalize_foreground_conversation_departments(&app_config, &mut data);
-    let mut runtime_data = data.clone();
-    merge_private_organization_into_runtime_data(&state.data_path, &mut app_config, &mut runtime_data)?;
-    let requested_agent_id = input.agent_id.trim();
-    if !requested_agent_id.is_empty()
-        && !runtime_data
-            .agents
-            .iter()
-            .any(|a| a.id == requested_agent_id && !a.is_built_in_user)
-    {
-        return Err(format!("Selected agent '{requested_agent_id}' not found."));
-    }
-    let effective_agent_id = if !requested_agent_id.is_empty() {
-        requested_agent_id.to_string()
-    } else if runtime_data
-        .agents
-        .iter()
-        .any(|a| a.id == data.assistant_department_agent_id && !a.is_built_in_user)
-    {
-        data.assistant_department_agent_id.clone()
-    } else {
-        runtime_data.agents
-            .iter()
-            .find(|a| !a.is_built_in_user)
-            .map(|a| a.id.clone())
-            .ok_or_else(|| "Selected agent not found.".to_string())?
-    };
-
-    let requested_conversation_id = input
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let idx = resolve_unarchived_conversation_index_with_fallback(
-        &mut data,
-        &app_config,
-        &effective_agent_id,
-        requested_conversation_id,
-    )?;
-
-    let mut messages = data.conversations[idx].messages.clone();
-
-    drop(guard);
-    materialize_chat_message_parts_from_media_refs(&mut messages, &state.data_path);
-    Ok(messages)
+    conversation_service().read_active_conversation_messages(state.inner(), &input)
 }
 
 #[tauri::command]
@@ -1406,38 +743,7 @@ fn mark_conversation_read(
     input: MarkConversationReadInput,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let conversation_id = input.conversation_id.trim();
-    if conversation_id.is_empty() {
-        return Ok(());
-    }
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut conversation = match state_read_conversation_cached(&state, conversation_id) {
-        Ok(conversation) => conversation,
-        Err(err) => {
-            runtime_log_debug(format!(
-                "[会话已读] 读取会话失败，conversation_id={}，error={}",
-                conversation_id, err
-            ));
-            drop(guard);
-            return Ok(());
-        }
-    };
-    let next_last_read_message_id = conversation
-        .messages
-        .last()
-        .map(|message| message.id.trim().to_string())
-        .unwrap_or_default();
-    if conversation.last_read_message_id.trim() == next_last_read_message_id {
-        drop(guard);
-        return Ok(());
-    }
-    conversation.last_read_message_id = next_last_read_message_id;
-    state_write_conversation_cached(&state, &conversation)?;
-    drop(guard);
-    Ok(())
+    conversation_service().mark_conversation_read(state.inner(), &input.conversation_id)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1505,96 +811,6 @@ fn default_message_page_limit() -> usize {
     100
 }
 
-fn resolve_unarchived_conversation_index_with_fallback(
-    data: &mut AppData,
-    app_config: &AppConfig,
-    effective_agent_id: &str,
-    requested_conversation_id: Option<&str>,
-) -> Result<usize, String> {
-    if let Some(conversation_id) = requested_conversation_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        if let Some(idx) = data.conversations.iter().position(|item| {
-            item.id == conversation_id
-                && item.summary.trim().is_empty()
-                && conversation_visible_in_foreground_lists(item)
-        }) {
-            return Ok(idx);
-        }
-        runtime_log_warn(format!(
-            "[解析对话索引] 请求的conversation_id不存在，终止本次读取: '{}' (agent_id: '{}')",
-            conversation_id, effective_agent_id
-        ));
-        return Err(format!(
-            "Requested conversation not found: {conversation_id}"
-        ));
-    }
-
-    if let Some(existing_idx) = main_conversation_index(data, effective_agent_id) {
-        return Ok(existing_idx);
-    }
-
-    if let Some(existing_idx) = latest_active_conversation_index(data, "", effective_agent_id) {
-        return Ok(existing_idx);
-    }
-
-    let api_config = resolve_selected_api_config(app_config, None)
-        .ok_or_else(|| "No API config available".to_string())?;
-    Ok(ensure_active_conversation_index(
-        data,
-        &api_config.id,
-        effective_agent_id,
-    ))
-}
-
-fn with_unarchived_conversation_by_id<T>(
-    state: &AppState,
-    conversation_id: &str,
-    reader: impl FnOnce(&Conversation) -> Result<T, String>,
-) -> Result<T, String> {
-    let normalized_conversation_id = conversation_id.trim();
-    if normalized_conversation_id.is_empty() {
-        return Err("conversationId is required.".to_string());
-    }
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let result = {
-        let mut cached = state
-            .cached_app_data
-            .lock()
-            .map_err(|err| format!("Failed to lock cached app data: {:?}", err))?;
-        if cached.is_none() {
-            drop(cached);
-            let loaded = state_read_app_data_cached(state)?;
-            cached = state
-                .cached_app_data
-                .lock()
-                .map_err(|err| format!("Failed to lock cached app data: {:?}", err))?;
-            if cached.is_none() {
-                *cached = Some(loaded);
-            }
-        }
-        let data = cached
-            .as_ref()
-            .ok_or_else(|| "Cached app data is unexpectedly missing".to_string())?;
-        let conversation = data
-            .conversations
-            .iter()
-            .find(|item| {
-                item.id == normalized_conversation_id
-                    && item.summary.trim().is_empty()
-                    && conversation_visible_in_foreground_lists(item)
-            })
-            .ok_or_else(|| format!("Unarchived conversation not found: {normalized_conversation_id}"))?;
-        reader(conversation)?
-    };
-    drop(guard);
-    Ok(result)
-}
-
 fn clone_messages_after_page(
     messages: &[ChatMessage],
     after_message_id: &str,
@@ -1628,27 +844,12 @@ fn resolve_unarchived_conversation_messages_after(
     after_message_id: Option<&str>,
     fallback_limit: usize,
 ) -> Result<(Vec<ChatMessage>, Option<String>), String> {
-    let trimmed_after = after_message_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    let (mut page, fallback_mode) = with_unarchived_conversation_by_id(state, conversation_id, |conversation| {
-        let messages = &conversation.messages;
-        let page_result = if let Some(after_id) = trimmed_after {
-            if let Some(after_idx) = messages.iter().position(|item| item.id == after_id) {
-                (messages[(after_idx + 1)..].to_vec(), None)
-            } else {
-                let start = messages.len().saturating_sub(fallback_limit);
-                (messages[start..].to_vec(), Some("recent_limit".to_string()))
-            }
-        } else {
-            let start = messages.len().saturating_sub(fallback_limit);
-            (messages[start..].to_vec(), Some("recent_limit".to_string()))
-        };
-        Ok(page_result)
-    })?;
-    materialize_chat_message_parts_from_media_refs(&mut page, &state.data_path);
-    Ok((page, fallback_mode))
+    conversation_service().read_messages_after_with_fallback(
+        state,
+        conversation_id,
+        after_message_id,
+        fallback_limit,
+    )
 }
 
 #[tauri::command]
@@ -1661,71 +862,12 @@ fn get_active_conversation_messages_before(
         return Err("beforeMessageId is required.".to_string());
     }
     let limit = input.limit.clamp(1, 100);
-    let direct_conversation_id = input
-        .session
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-
-    if let Some(conversation_id) = direct_conversation_id {
-        let (mut page, has_more) = with_unarchived_conversation_by_id(state.inner(), &conversation_id, |conversation| {
-            clone_messages_before_page(&conversation.messages, before_message_id, limit)
-        })?;
-        materialize_chat_message_parts_from_media_refs(&mut page, &state.data_path);
-        return Ok(GetActiveConversationMessagesBeforeOutput {
-            messages: page,
-            has_more,
-        });
-    }
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
-    let mut app_config = state_read_config_cached(&state)?;
-    let mut data = state_read_app_data_cached(&state)?;
-    let _normalized_changed = normalize_single_active_main_conversation(&mut data);
-    let _department_changed = normalize_foreground_conversation_departments(&app_config, &mut data);
-    let mut runtime_data = data.clone();
-    merge_private_organization_into_runtime_data(&state.data_path, &mut app_config, &mut runtime_data)?;
-    let requested_agent_id = input.session.agent_id.trim();
-    if !requested_agent_id.is_empty()
-        && !runtime_data
-            .agents
-            .iter()
-            .any(|a| a.id == requested_agent_id && !a.is_built_in_user)
-    {
-        return Err(format!("Selected agent '{requested_agent_id}' not found."));
-    }
-    let effective_agent_id = if !requested_agent_id.is_empty() {
-        requested_agent_id.to_string()
-    } else if runtime_data
-        .agents
-        .iter()
-        .any(|a| a.id == data.assistant_department_agent_id && !a.is_built_in_user)
-    {
-        data.assistant_department_agent_id.clone()
-    } else {
-        runtime_data.agents
-            .iter()
-            .find(|a| !a.is_built_in_user)
-            .map(|a| a.id.clone())
-            .ok_or_else(|| "Selected agent not found.".to_string())?
-    };
-
-    let idx = resolve_unarchived_conversation_index_with_fallback(
-        &mut data,
-        &app_config,
-        &effective_agent_id,
-        None,
+    let (page, has_more) = conversation_service().read_messages_before(
+        state.inner(),
+        &input.session,
+        before_message_id,
+        limit,
     )?;
-    let (mut page, has_more) =
-        clone_messages_before_page(&data.conversations[idx].messages, before_message_id, limit)?;
-    drop(guard);
-    materialize_chat_message_parts_from_media_refs(&mut page, &state.data_path);
     Ok(GetActiveConversationMessagesBeforeOutput {
         messages: page,
         has_more,
@@ -1742,69 +884,12 @@ fn get_active_conversation_messages_after(
         return Err("afterMessageId is required.".to_string());
     }
     let limit = input.limit.clamp(1, 200);
-    let direct_conversation_id = input
-        .session
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-
-    if let Some(conversation_id) = direct_conversation_id {
-        let mut page = with_unarchived_conversation_by_id(state.inner(), &conversation_id, |conversation| {
-            clone_messages_after_page(&conversation.messages, after_message_id, limit)
-        })?;
-        materialize_chat_message_parts_from_media_refs(&mut page, &state.data_path);
-        return Ok(GetActiveConversationMessagesAfterOutput {
-            messages: page,
-        });
-    }
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
-    let mut app_config = state_read_config_cached(&state)?;
-    let mut data = state_read_app_data_cached(&state)?;
-    let _normalized_changed = normalize_single_active_main_conversation(&mut data);
-    let _department_changed = normalize_foreground_conversation_departments(&app_config, &mut data);
-    let mut runtime_data = data.clone();
-    merge_private_organization_into_runtime_data(&state.data_path, &mut app_config, &mut runtime_data)?;
-    let requested_agent_id = input.session.agent_id.trim();
-    if !requested_agent_id.is_empty()
-        && !runtime_data
-            .agents
-            .iter()
-            .any(|a| a.id == requested_agent_id && !a.is_built_in_user)
-    {
-        return Err(format!("Selected agent '{requested_agent_id}' not found."));
-    }
-    let effective_agent_id = if !requested_agent_id.is_empty() {
-        requested_agent_id.to_string()
-    } else if runtime_data
-        .agents
-        .iter()
-        .any(|a| a.id == data.assistant_department_agent_id && !a.is_built_in_user)
-    {
-        data.assistant_department_agent_id.clone()
-    } else {
-        runtime_data.agents
-            .iter()
-            .find(|a| !a.is_built_in_user)
-            .map(|a| a.id.clone())
-            .ok_or_else(|| "Selected agent not found.".to_string())?
-    };
-
-    let idx = resolve_unarchived_conversation_index_with_fallback(
-        &mut data,
-        &app_config,
-        &effective_agent_id,
-        None,
+    let page = conversation_service().read_messages_after(
+        state.inner(),
+        &input.session,
+        after_message_id,
+        limit,
     )?;
-    let mut page = clone_messages_after_page(&data.conversations[idx].messages, after_message_id, limit)?;
-    drop(guard);
-    materialize_chat_message_parts_from_media_refs(&mut page, &state.data_path);
     Ok(GetActiveConversationMessagesAfterOutput {
         messages: page,
     })
@@ -1950,28 +1035,6 @@ fn validate_rewind_input(
     Ok((message_id, requested_agent_id))
 }
 
-fn resolve_rewind_target_conversation_index(
-    data: &AppData,
-    requested_agent_id: &str,
-    requested_conversation_id: Option<&str>,
-) -> Result<usize, String> {
-    if let Some(conversation_id) = requested_conversation_id {
-        data.conversations
-            .iter()
-            .position(|item| {
-                item.id == conversation_id
-                    && item.summary.trim().is_empty()
-                    && conversation_visible_in_foreground_lists(item)
-            })
-            .ok_or_else(|| {
-                format!("Target conversation not found or unavailable, conversationId={conversation_id}")
-            })
-    } else {
-        latest_active_conversation_index(data, "", requested_agent_id)
-            .ok_or_else(|| "No conversation found for current agent.".to_string())
-    }
-}
-
 fn persist_rewind_conversation_state(
     conversation: &mut Conversation,
     remove_from: usize,
@@ -2058,28 +1121,17 @@ async fn rewind_conversation_from_message(
         message_id, input.undo_apply_patch
     ));
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| {
-            format!(
-                "Failed to lock state mutex at {}:{} {}: {err}",
-                file!(),
-                line!(),
-                module_path!()
-            )
-        })?;
-
-    let mut app_config = read_config(&state.config_path)?;
-
-    let mut data = state_read_app_data_cached(&state)?;
-    let mut runtime_data = data.clone();
-    merge_private_organization_into_runtime_data(&state.data_path, &mut app_config, &mut runtime_data)?;
-    if !runtime_data
-        .agents
-        .iter()
-        .any(|a| a.id == requested_agent_id && !a.is_built_in_user)
-    {
+    let has_requested_agent = {
+        let mut app_config = read_config(&state.config_path)?;
+        let data = state_read_app_data_cached(&state)?;
+        let mut runtime_data = data.clone();
+        merge_private_organization_into_runtime_data(&state.data_path, &mut app_config, &mut runtime_data)?;
+        runtime_data
+            .agents
+            .iter()
+            .any(|a| a.id == requested_agent_id && !a.is_built_in_user)
+    };
+    if !has_requested_agent {
         let elapsed_ms = started_at.elapsed().as_millis();
         runtime_log_error(format!(
             "[会话撤回] 失败，任务=rewind_conversation_from_message，reason=agent_not_found，agent_id={}，duration_ms={}",
@@ -2088,91 +1140,20 @@ async fn rewind_conversation_from_message(
         return Err(format!("Selected agent '{requested_agent_id}' not found."));
     }
 
-    let requested_conversation_id = input
-        .session
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let idx = resolve_rewind_target_conversation_index(&data, &requested_agent_id, requested_conversation_id)?;
-    let (
-        conversation_id,
-        removed_count,
-        remaining_count,
-        current_todo,
-        current_todos,
-        mut recalled_user_message,
-        git_snapshot,
-    ) = {
-        let conversation = data
-            .conversations
-            .get_mut(idx)
-            .ok_or_else(|| "Active conversation index is out of bounds.".to_string())?;
-        let conversation_id = conversation.id.clone();
-
-        let remove_from = conversation
-            .messages
-            .iter()
-            .position(|m| m.id == message_id && m.role == "user")
-            .ok_or_else(|| "Target user message not found in active conversation.".to_string())?;
-        runtime_log_info(format!(
-            "[会话撤回] 命中目标，任务=rewind_conversation_from_message，conversation_id={}，remove_from={}，messages_total={}",
-            conversation.id,
-            remove_from,
-            conversation.messages.len()
-        ));
-
-        let recalled_user_message = conversation.messages.get(remove_from).cloned();
-        let removed_messages = conversation.messages[remove_from..].to_vec();
-        let git_snapshot = recalled_user_message
-            .as_ref()
-            .and_then(|message| read_git_snapshot_record_from_provider_meta(message.provider_meta.as_ref()));
-        if input.undo_apply_patch {
-            runtime_log_info(format!(
-                "[会话撤回] 开始工具逆向，任务=rewind_conversation_from_message，removed_messages={}，message_id={}",
-                removed_messages.len(),
-                message_id
-            ));
-            let undone_patch_count =
-                match try_undo_apply_patch_from_removed_messages(state.inner(), &removed_messages) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        let elapsed_ms = started_at.elapsed().as_millis();
-                        runtime_log_error(format!(
-                            "[会话撤回] 失败，任务=rewind_conversation_from_message，stage=undo_apply_patch，message_id={}，duration_ms={}，error={}",
-                            message_id, elapsed_ms, err
-                        ));
-                        return Err(err);
-                    }
-                };
-            runtime_log_info(format!(
-                "[会话撤回] 工具逆向处理，任务=rewind_conversation_from_message，patches={}，message_id={}",
-                undone_patch_count, message_id
-            ));
-            if undone_patch_count > 0 {
-                eprintln!(
-                    "[会话撤回] 已执行 apply_patch 反向撤回: patches={}, message_id={}",
-                    undone_patch_count,
-                    message_id
-                );
-            }
-        }
-        let (removed_count, remaining_count, current_todo, current_todos) =
-            persist_rewind_conversation_state(conversation, remove_from)?;
-        (
-            conversation_id,
-            removed_count,
-            remaining_count,
-            current_todo,
-            current_todos,
-            recalled_user_message,
-            git_snapshot,
-        )
-    };
-    if removed_count > 0 {
-        persist_single_conversation_runtime_fast(&state, &data, &conversation_id)?;
-    }
-    drop(guard);
+    let result = conversation_service().rewind_conversation_from_message(
+        state.inner(),
+        &input,
+        &requested_agent_id,
+        &message_id,
+        &started_at,
+    )?;
+    let conversation_id = result.conversation_id;
+    let removed_count = result.removed_count;
+    let remaining_count = result.remaining_count;
+    let current_todo = result.current_todo;
+    let current_todos = result.current_todos;
+    let mut recalled_user_message = result.recalled_user_message;
+    let git_snapshot = result.git_snapshot;
 
     if removed_count > 0 {
         emit_conversation_todos_updated_payload(
@@ -2191,8 +1172,8 @@ async fn rewind_conversation_from_message(
             && snapshot
                 .ghost_commit_id
                 .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
+                .map(|value: &str| value.trim())
+                .filter(|value: &&str| !value.is_empty())
                 .is_some()
         {
             runtime_log_info(format!(

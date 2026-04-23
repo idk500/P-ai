@@ -10,23 +10,7 @@ async fn builtin_desktop_wait(ms: u64) -> Result<Value, String> {
 
 
 async fn builtin_reload(app_state: &AppState) -> Result<Value, String> {
-    let mut result = {
-        let guard = app_state
-            .conversation_lock
-            .lock()
-            .map_err(|err| {
-                named_lock_error(
-                    "conversation_lock",
-                    file!(),
-                    line!(),
-                    module_path!(),
-                    &err,
-                )
-            })?;
-        let result = refresh_workspace_mcp_and_skills(app_state)?;
-        drop(guard);
-        result
-    };
+    let mut result = refresh_workspace_mcp_and_skills(app_state)?;
     match mcp_redeploy_all_from_policy(app_state).await {
         Ok(deploy_errors) => {
             if !deploy_errors.is_empty() {
@@ -50,18 +34,6 @@ async fn builtin_organize_context(
     agent_id: &str,
 ) -> Result<Value, String> {
     let (selected_api, resolved_api, source, effective_agent_id) = {
-        let guard = app_state
-            .conversation_lock
-            .lock()
-            .map_err(|err| {
-                named_lock_error(
-                    "conversation_lock",
-                    file!(),
-                    line!(),
-                    module_path!(),
-                    &err,
-                )
-            })?;
         let mut app_config = read_config(&app_state.config_path)?;
         let mut data = state_read_app_data_cached(app_state)?;
         merge_private_organization_into_runtime_data(
@@ -102,7 +74,6 @@ async fn builtin_organize_context(
                 "message": "此时不应该整理：当前上下文占用不足 10%。"
             }));
         }
-        drop(guard);
         (selected_api, resolved_api, source, effective_agent_id)
     };
 

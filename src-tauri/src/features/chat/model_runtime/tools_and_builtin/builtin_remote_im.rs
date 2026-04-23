@@ -289,27 +289,7 @@ fn remote_im_current_contact_context_from_session(
     session_id: &str,
 ) -> Result<(Conversation, RemoteImChannelConfig, RemoteImContact), String> {
     let conversation_id = contact_tool_target_conversation_id(session_id)?;
-    let config = state_read_config_cached(state)?;
-    let data = state_read_app_data_cached(state)?;
-    let conversation = data
-        .conversations
-        .iter()
-        .find(|item| item.id == conversation_id && item.summary.trim().is_empty())
-        .cloned()
-        .ok_or_else(|| format!("当前会话不存在: conversation_id={conversation_id}"))?;
-    if !conversation_is_remote_im_contact(&conversation) {
-        return Err("联系人专用工具仅可用于联系人会话".to_string());
-    }
-    let contact = remote_im_find_contact_by_conversation(&data, &conversation_id)
-        .cloned()
-        .ok_or_else(|| format!("未找到当前会话绑定的联系人: conversation_id={conversation_id}"))?;
-    let channel = remote_im_channel_by_id(&config, &contact.channel_id)
-        .cloned()
-        .ok_or_else(|| format!("远程 IM 渠道不存在: {}", contact.channel_id))?;
-    if !channel.enabled {
-        return Err(format!("远程 IM 渠道未启用: {}", contact.channel_id));
-    }
-    Ok((conversation, channel, contact))
+    conversation_service().read_remote_im_contact_session_context(state, &conversation_id)
 }
 
 async fn builtin_contact_reply(

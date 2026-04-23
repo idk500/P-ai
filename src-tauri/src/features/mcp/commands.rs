@@ -128,15 +128,10 @@ async fn mcp_redeploy_all_from_policy(state: &AppState) -> Result<Vec<WorkspaceL
 
 #[tauri::command]
 fn mcp_list_servers(state: State<'_, AppState>) -> Result<Vec<McpServerConfig>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
     let mut out = load_workspace_mcp_servers(&state)?;
     for item in &mut out {
         *item = overlay_runtime_state_on_server(item.clone());
     }
-    drop(guard);
     Ok(out)
 }
 
@@ -182,15 +177,9 @@ fn mcp_save_server(
     state: State<'_, AppState>,
 ) -> Result<McpServerConfig, String> {
     let next = normalize_mcp_server_input(input)?;
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
     save_workspace_mcp_server(&state, &next)?;
     let mut saved = load_server_by_id(&state, &next.id)?;
     saved = overlay_runtime_state_on_server(saved);
-    drop(guard);
 
     Ok(saved)
 }
@@ -204,12 +193,7 @@ async fn mcp_remove_server(
     if server_id.is_empty() {
         return Err("serverId is required".to_string());
     }
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
     let removed = remove_workspace_mcp_server(&state, server_id)?;
-    drop(guard);
     if removed {
         mcp_disconnect_cached_client(server_id).await;
         mcp_runtime_state_remove(server_id);
@@ -228,12 +212,7 @@ async fn mcp_list_server_tools(
     }
 
     let server = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
         let server = load_server_by_id(&state, server_id)?;
-        drop(guard);
         server
     };
 
@@ -258,12 +237,7 @@ fn mcp_list_server_tools_cached(
     }
 
     let server = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
         let server = load_server_by_id(&state, server_id)?;
-        drop(guard);
         server
     };
 
@@ -288,13 +262,8 @@ async fn mcp_deploy_server(
     }
 
     let server = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
         let server = load_server_by_id(&state, server_id)?;
         set_workspace_mcp_policy_enabled(&state, server_id, true)?;
-        drop(guard);
         server
     };
 
@@ -315,12 +284,7 @@ async fn mcp_deploy_server(
         .map(|t| t.tool_name.clone())
         .collect::<Vec<_>>();
     let merged_policies = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
         let policies = merge_workspace_mcp_tool_policies_with_new_tools(&state, server_id, &discovered_names)?;
-        drop(guard);
         policies
     };
 
@@ -353,24 +317,14 @@ async fn mcp_undeploy_server(
         return Err("serverId is required".to_string());
     }
     {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
         let _ = load_server_by_id(&state, server_id)?;
         set_workspace_mcp_policy_enabled(&state, server_id, false)?;
-        drop(guard);
     }
     mcp_disconnect_cached_client(server_id).await;
     mcp_runtime_state_set(server_id, false, "stopped", "", Vec::new());
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
     let mut out = load_server_by_id(&state, server_id)?;
     out = overlay_runtime_state_on_server(out);
-    drop(guard);
     Ok(out)
 }
 
@@ -389,10 +343,6 @@ fn mcp_set_tool_enabled(
     }
 
     let policies = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
         let _ = load_server_by_id(&state, server_id)?;
         let mut policies = load_workspace_mcp_tool_policies(&state, server_id)?;
         if let Some(policy) = policies.iter_mut().find(|p| p.tool_name == tool_name) {
@@ -404,20 +354,14 @@ fn mcp_set_tool_enabled(
             });
         }
         save_workspace_mcp_tool_policies(&state, server_id, &policies)?;
-        drop(guard);
         policies
     };
 
     mcp_runtime_state_set_tool_enabled(server_id, tool_name, input.enabled);
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
     let mut server = load_server_by_id(&state, server_id)?;
     server.tool_policies = policies;
     server = overlay_runtime_state_on_server(server);
-    drop(guard);
 
     Ok(server)
 }

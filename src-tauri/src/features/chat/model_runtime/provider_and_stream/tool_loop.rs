@@ -154,18 +154,7 @@ fn tool_loop_active_conversation_snapshot(
     state: &AppState,
     conversation_id: &str,
 ) -> Result<Option<Conversation>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
-    let data = state_read_app_data_cached(state)?;
-    let conversation = data
-        .conversations
-        .iter()
-        .find(|item| item.id == conversation_id && item.summary.trim().is_empty())
-        .cloned();
-    drop(guard);
-    Ok(conversation)
+    conversation_service().try_read_unarchived_conversation(state, conversation_id)
 }
 
 fn build_tool_loop_prepared_for_continuation(

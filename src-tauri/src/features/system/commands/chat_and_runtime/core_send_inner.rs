@@ -347,25 +347,7 @@ fn remote_im_find_contact_by_conversation<'a>(
     data: &'a AppData,
     conversation_id: &str,
 ) -> Option<&'a RemoteImContact> {
-    let conversation = data.conversations.iter().find(|item| item.id == conversation_id)?;
-    let contact_conversation_key = conversation
-        .root_conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    if let Some(key) = contact_conversation_key {
-        return data.remote_im_contacts.iter().find(|contact| {
-            remote_im_contact_conversation_key(contact) == key
-        });
-    }
-    data.remote_im_contacts.iter().find(|contact| {
-        contact
-            .bound_conversation_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            == Some(conversation_id)
-    })
+    conversation_service().find_remote_im_contact_by_conversation_in_data(data, conversation_id)
 }
 
 fn remote_im_contact_tool_history_events(
@@ -405,7 +387,6 @@ async fn resolve_image_description_with_vision_fallback(
 ) -> Result<Option<String>, String> {
     let hash = compute_image_hash_hex(image)?;
     let cached = {
-        let _guard = lock_conversation_with_metrics(state, "image_text_cache_read")?;
         let data = state_read_app_data_cached(state)?;
         find_image_text_cache(&data, &hash, &vision_api.id)
     };
@@ -424,7 +405,6 @@ async fn resolve_image_description_with_vision_fallback(
     }
 
     {
-        let _guard = lock_conversation_with_metrics(state, "image_text_cache_write")?;
         let mut runtime = state_read_runtime_state_cached(state)?;
         upsert_runtime_image_text_cache(&mut runtime, &hash, &vision_api.id, &trimmed);
         state_write_runtime_state_cached(state, &runtime)?;
@@ -717,10 +697,6 @@ fn update_remote_im_reply_decision_for_message(
     let assistant_message_id = assistant_message_id
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let _guard = lock_conversation_with_metrics(
-        state,
-        "update_remote_im_reply_decision_for_message",
-    )?;
 
     let update_message = |message: &mut ChatMessage| {
         let mut meta = message
@@ -753,7 +729,7 @@ fn update_remote_im_reply_decision_for_message(
         message.provider_meta = Some(meta);
     };
 
-    match state_read_conversation_cached(state, conversation_id) {
+    match conversation_service().read_persisted_conversation(state, conversation_id) {
         Ok(mut conversation) => {
             if conversation.summary.trim().is_empty() {
                 if let Some(message) = conversation.messages.iter_mut().rev().find(|message| {
@@ -763,7 +739,10 @@ fn update_remote_im_reply_decision_for_message(
                             .unwrap_or(true)
                 }) {
                     update_message(message);
-                    state_write_conversation_with_chat_index_cached(state, &conversation)?;
+                    conversation_service().persist_conversation_with_chat_index(
+                        state,
+                        &conversation,
+                    )?;
                     return Ok(());
                 }
             }
@@ -1187,98 +1166,28 @@ async fn send_chat_message_inner(
             .find(|a| a.id == effective_agent_id)
             .cloned()
             .ok_or_else(|| "Selected agent not found.".to_string())?;
-        let requested_conversation_idx = requested_conversation_id_for_prepare.as_deref().and_then(|conversation_id| {
-            data.conversations
-                .iter()
-                .position(|item| item.id == conversation_id && item.summary.trim().is_empty())
-        });
-        let is_runtime_conversation =
-            requested_conversation_id_for_prepare.is_some()
-                && requested_conversation_idx.is_none()
-                && runtime_conversation_id_for_prepare.is_some();
-        let idx = if let Some(requested_idx) = requested_conversation_idx {
-            Some(requested_idx)
-        } else if is_runtime_conversation {
-            None
-        } else if let Some(conversation_id) = requested_conversation_id_for_prepare.as_deref() {
-            Some(
-                data.conversations
-                    .iter()
-                    .position(|item| {
-                        item.id == conversation_id && item.summary.trim().is_empty()
-                    })
-                    .ok_or_else(|| format!("指定会话不存在或不可用：{conversation_id}"))?,
-            )
-        } else {
-            Some(ensure_active_foreground_conversation_index_atomic(
-                data,
-                &state.data_path,
-                &selected_api.id,
-                effective_agent_id,
-            ))
-        };
-        if idx.is_some() {
-            for conversation in &mut data.conversations {
-                if conversation_is_delegate(conversation)
-                    || !conversation.summary.trim().is_empty()
-                {
-                    continue;
-                }
-                conversation.status = "active".to_string();
-            }
-        }
-
-        let conversation_before = if let Some(actual_idx) = idx {
-            data.conversations[actual_idx].clone()
-        } else {
-            runtime_conversation_for_prepare.clone()
-        };
-        let is_remote_im_contact_conversation =
-            conversation_is_remote_im_contact(&conversation_before);
-        let remote_im_contact_processing_mode = if is_remote_im_contact_conversation {
-            remote_im_find_contact_by_conversation(data, &conversation_before.id)
-                .map(|contact| normalize_contact_processing_mode(&contact.processing_mode))
-                .unwrap_or_else(|| "continuous".to_string())
-        } else {
-            "continuous".to_string()
-        };
-        let last_archive_summary =
-            if is_runtime_conversation || conversation_is_delegate(&conversation_before) {
-                None
-            } else {
-                data.conversations
-                    .iter()
-                    .rev()
-                    .find(|c| !conversation_is_delegate(c) && !c.summary.trim().is_empty())
-                    .map(|c| c.summary.clone())
-            };
-        let prompt_conversation_before = if is_remote_im_contact_conversation
-            && remote_im_contact_processing_mode == "qa"
-        {
-            let trimmed = remote_im_trim_conversation_for_qa_mode(&conversation_before);
-            eprintln!(
-                "[远程IM] 问答模式裁剪会话上下文: conversation_id={}, original_messages={}, trimmed_messages={}",
-                conversation_before.id,
-                conversation_before.messages.len(),
-                trimmed.messages.len()
-            );
-            trimmed
-        } else {
-            conversation_before.clone()
-        };
+        let resolved = conversation_service().resolve_prompt_prepare_conversation_from_data(
+            data,
+            &state.data_path,
+            runtime_conversation_id_for_prepare.as_deref(),
+            &runtime_conversation_for_prepare,
+            selected_api,
+            effective_agent_id,
+            requested_conversation_id_for_prepare.as_deref(),
+        )?;
 
         Ok(ConversationPrepareSnapshot {
             current_agent,
             agents: runtime_agents.to_vec(),
-            response_style_id: data.response_style_id.clone(),
-            user_name: user_persona_name(data),
-            user_intro: user_persona_intro(data),
-            last_archive_summary,
-            prompt_conversation_before,
-            is_remote_im_contact_conversation,
-            remote_im_contact_processing_mode,
-            enable_pdf_images: data.pdf_read_mode == "image" && selected_api.enable_image,
-            is_runtime_conversation,
+            response_style_id: resolved.response_style_id,
+            user_name: resolved.user_name,
+            user_intro: resolved.user_intro,
+            last_archive_summary: resolved.last_archive_summary,
+            prompt_conversation_before: resolved.conversation_before,
+            is_remote_im_contact_conversation: resolved.is_remote_im_contact_conversation,
+            remote_im_contact_processing_mode: resolved.remote_im_contact_processing_mode,
+            enable_pdf_images: resolved.enable_pdf_images,
+            is_runtime_conversation: resolved.is_runtime_conversation,
             runtime_conversation_id: runtime_conversation_id_for_prepare.clone(),
         })
     };
@@ -1293,79 +1202,31 @@ async fn send_chat_message_inner(
             .find(|a| a.id == effective_agent_id)
             .cloned()
             .ok_or_else(|| "Selected agent not found.".to_string())?;
-        let requested_conversation_idx = requested_conversation_id_for_prepare
-            .as_deref()
-            .and_then(|conversation_id| {
-                data.conversations
-                    .iter()
-                    .position(|item| item.id == conversation_id && item.summary.trim().is_empty())
-            });
-        let is_runtime_conversation =
-            requested_conversation_id_for_prepare.is_some()
-                && requested_conversation_idx.is_none()
-                && runtime_conversation_id_for_prepare.is_some();
-        let idx = if let Some(requested_idx) = requested_conversation_idx {
-            Some(requested_idx)
-        } else if is_runtime_conversation {
-            None
-        } else if requested_conversation_id_for_prepare.is_some() {
+        let Some(resolved) =
+            conversation_service().resolve_prompt_prepare_conversation_from_data_read_only(
+                data,
+                &state.data_path,
+                runtime_conversation_id_for_prepare.as_deref(),
+                &runtime_conversation_for_prepare,
+                selected_api,
+                effective_agent_id,
+                requested_conversation_id_for_prepare.as_deref(),
+            )?
+        else {
             return Ok(None);
-        } else {
-            active_foreground_conversation_index_read_only(data, effective_agent_id)
-        };
-        let conversation_before = if let Some(actual_idx) = idx {
-            data.conversations
-                .get(actual_idx)
-                .cloned()
-                .ok_or_else(|| "前台会话索引无效".to_string())?
-        } else {
-            runtime_conversation_for_prepare.clone()
-        };
-        let is_remote_im_contact_conversation =
-            conversation_is_remote_im_contact(&conversation_before);
-        let remote_im_contact_processing_mode = if is_remote_im_contact_conversation {
-            remote_im_find_contact_by_conversation(data, &conversation_before.id)
-                .map(|contact| normalize_contact_processing_mode(&contact.processing_mode))
-                .unwrap_or_else(|| "continuous".to_string())
-        } else {
-            "continuous".to_string()
-        };
-        let last_archive_summary =
-            if is_runtime_conversation || conversation_is_delegate(&conversation_before) {
-                None
-            } else {
-                data.conversations
-                    .iter()
-                    .rev()
-                    .find(|c| !conversation_is_delegate(c) && !c.summary.trim().is_empty())
-                    .map(|c| c.summary.clone())
-            };
-        let prompt_conversation_before = if is_remote_im_contact_conversation
-            && remote_im_contact_processing_mode == "qa"
-        {
-            let trimmed = remote_im_trim_conversation_for_qa_mode(&conversation_before);
-            eprintln!(
-                "[远程IM] 问答模式裁剪会话上下文: conversation_id={}, original_messages={}, trimmed_messages={}",
-                conversation_before.id,
-                conversation_before.messages.len(),
-                trimmed.messages.len()
-            );
-            trimmed
-        } else {
-            conversation_before.clone()
         };
         Ok(Some(ConversationPrepareSnapshot {
             current_agent,
             agents: runtime_agents.to_vec(),
-            response_style_id: data.response_style_id.clone(),
-            user_name: user_persona_name(data),
-            user_intro: user_persona_intro(data),
-            last_archive_summary,
-            prompt_conversation_before,
-            is_remote_im_contact_conversation,
-            remote_im_contact_processing_mode,
-            enable_pdf_images: data.pdf_read_mode == "image" && selected_api.enable_image,
-            is_runtime_conversation,
+            response_style_id: resolved.response_style_id,
+            user_name: resolved.user_name,
+            user_intro: resolved.user_intro,
+            last_archive_summary: resolved.last_archive_summary,
+            prompt_conversation_before: resolved.conversation_before,
+            is_remote_im_contact_conversation: resolved.is_remote_im_contact_conversation,
+            remote_im_contact_processing_mode: resolved.remote_im_contact_processing_mode,
+            enable_pdf_images: resolved.enable_pdf_images,
+            is_runtime_conversation: resolved.is_runtime_conversation,
             runtime_conversation_id: runtime_conversation_id_for_prepare.clone(),
         }))
     };
@@ -1374,10 +1235,6 @@ async fn send_chat_message_inner(
         let prepare_started = std::time::Instant::now();
         let mut prepare_detail_parts = Vec::<String>::new();
         let lock_wait_started = std::time::Instant::now();
-        let _guard = lock_conversation_with_metrics(
-            state,
-            "send_chat_message_inner_runtime_and_session_ready",
-        )?;
         let lock_wait_ms = lock_wait_started
             .elapsed()
             .as_millis()
@@ -1711,8 +1568,6 @@ async fn send_chat_message_inner(
                 for (idx, image) in images.iter().enumerate() {
                     let hash = compute_image_hash_hex(image)?;
                     let cached = {
-                        let _guard =
-                            lock_conversation_with_metrics(&state, "image_text_cache_read")?;
                         let data = state_read_app_data_cached(&state)?;
                         find_image_text_cache(&data, &hash, &vision_api.id)
                     };
@@ -1731,8 +1586,6 @@ async fn send_chat_message_inner(
                         continue;
                     }
 
-                    let _guard =
-                        lock_conversation_with_metrics(&state, "image_text_cache_write")?;
                     let mut runtime = state_read_runtime_state_cached(&state)?;
                     let mapped = if let Some(existing) =
                         find_runtime_image_text_cache(&runtime, &hash, &vision_api.id)
@@ -1868,8 +1721,6 @@ async fn send_chat_message_inner(
             log_run_stage("prepare_context.foreground_conversation_ready");
             snapshot
         } else {
-            let _guard =
-                lock_conversation_with_metrics(&state, "prepare_context_snapshot")?;
             log_run_stage("prepare_context.conversation_lock_wait_done");
             let mut data = state_read_app_data_cached(&state)?;
             log_run_stage("prepare_context.app_data_read_done");
@@ -2009,11 +1860,7 @@ async fn send_chat_message_inner(
                 updated_conversation
             } else {
                 let updated_conversation = {
-                    let _guard = lock_conversation_with_metrics(
-                        &state,
-                        "prepare_context_commit_user_message",
-                    )?;
-                    let mut conversation = state_read_conversation_cached(
+                    let mut conversation = conversation_service().read_persisted_conversation(
                         &state,
                         &updated_conversation.id,
                     )?;
@@ -2027,7 +1874,10 @@ async fn send_chat_message_inner(
                     for memory_id in &recall_payload.raw_ids {
                         conversation.memory_recall_table.push(memory_id.clone());
                     }
-                    state_write_conversation_with_chat_index_cached(&state, &conversation)?;
+                    conversation_service().persist_conversation_with_chat_index(
+                        &state,
+                        &conversation,
+                    )?;
                     conversation
                 };
                 log_run_stage("prepare_context.user_message_committed");
@@ -2699,10 +2549,7 @@ async fn send_chat_message_inner(
 
     let mut persisted_assistant_message: Option<ChatMessage> = None;
     {
-        let _guard =
-            lock_conversation_with_metrics(&state, "assistant_message_commit")?;
-
-        match state_read_conversation_cached(&state, &conversation_id) {
+        match conversation_service().read_persisted_conversation(&state, &conversation_id) {
             Ok(mut conversation) => {
                 if !conversation.summary.trim().is_empty() {
                     return Err(format!("指定会话不存在或不可用：{}", conversation_id));
@@ -2731,7 +2578,10 @@ async fn send_chat_message_inner(
                     conversation.updated_at = now.clone();
                     conversation.last_assistant_at = Some(now);
                 }
-                state_write_conversation_with_chat_index_cached(&state, &conversation)?;
+                conversation_service().persist_conversation_with_chat_index(
+                    &state,
+                    &conversation,
+                )?;
             }
             Err(err) if !err.contains("not found") => return Err(err),
             Err(_) => {

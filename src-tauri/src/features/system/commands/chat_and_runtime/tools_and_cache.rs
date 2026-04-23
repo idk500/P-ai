@@ -3,15 +3,10 @@ fn check_tools_status(
     input: CheckToolsStatusInput,
     state: State<'_, AppState>,
 ) -> Result<Vec<ToolLoadStatus>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
     let mut config = state_read_config_cached(&state)?;
     normalize_api_tools(&mut config);
     let mut data = state_read_app_data_cached(&state)?;
     merge_private_organization_into_runtime_data(&state.data_path, &mut config, &mut data)?;
-    drop(guard);
 
     let target_agent_id = input
         .agent_id
@@ -165,12 +160,7 @@ fn check_tools_status(
 
 #[tauri::command]
 fn get_image_text_cache_stats(state: State<'_, AppState>) -> Result<ImageTextCacheStats, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
     let runtime = state_read_runtime_state_cached(&state)?;
-    drop(guard);
 
     let entries = runtime.image_text_cache.len();
     let total_chars = runtime
@@ -193,14 +183,9 @@ fn get_image_text_cache_stats(state: State<'_, AppState>) -> Result<ImageTextCac
 
 #[tauri::command]
 fn clear_image_text_cache(state: State<'_, AppState>) -> Result<ImageTextCacheStats, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
     let mut runtime = state_read_runtime_state_cached(&state)?;
     runtime.image_text_cache.clear();
     state_write_runtime_state_cached(&state, &runtime)?;
-    drop(guard);
 
     Ok(ImageTextCacheStats {
         entries: 0,

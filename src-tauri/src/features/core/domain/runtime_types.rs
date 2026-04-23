@@ -79,6 +79,14 @@ struct PendingAppDataPersist {
     data: AppData,
 }
 
+#[derive(Debug, Clone)]
+struct PendingConversationPersist {
+    seq: u64,
+    conversations: std::collections::HashMap<String, Conversation>,
+    deleted_conversation_ids: std::collections::HashSet<String>,
+    chat_index: Option<ChatIndexFile>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ConversationDirCacheSignature {
     file_count: u64,

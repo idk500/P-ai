@@ -340,10 +340,6 @@ fn append_archive_delivery_message_to_conversation(
         return Err("归档投放目标不能与来源会话相同".to_string());
     }
     let message = build_archive_delivery_message(source, archive_id, summary);
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let mut data = state_read_app_data_cached(state)?;
     {
         let target = data
@@ -359,8 +355,11 @@ fn append_archive_delivery_message_to_conversation(
         target.updated_at = message.created_at.clone();
         target.last_assistant_at = Some(message.created_at.clone());
     }
-    persist_single_conversation_runtime_fast(state, &data, target_conversation_id)?;
-    drop(guard);
+    conversation_service().persist_single_conversation_runtime_snapshot(
+        state,
+        &data,
+        target_conversation_id,
+    )?;
     emit_conversation_message_appended_event(state, target_conversation_id, &message);
     if let Err(err) = emit_unarchived_conversation_overview_updated_from_state(state) {
         runtime_log_warn(format!(
@@ -375,58 +374,7 @@ fn resolve_archive_target_conversation(
     state: &AppState,
     input: &SessionSelector,
 ) -> Result<(ApiConfig, ResolvedApiConfig, Conversation, String), String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut app_config = read_config(&state.config_path)?;
-    let mut data = state_read_app_data_cached(state)?;
-    merge_private_organization_into_runtime_data(&state.data_path, &mut app_config, &mut data)?;
-    let selected_api = resolve_selected_api_config(&app_config, input.api_config_id.as_deref())
-        .ok_or_else(|| "No API config configured. Please add one.".to_string())?;
-    let resolved_api = resolve_api_config(&app_config, Some(selected_api.id.as_str()))?;
-    let requested_agent_id = input.agent_id.trim();
-    let effective_agent_id = if data
-        .agents
-        .iter()
-        .any(|a| a.id == requested_agent_id && !a.is_built_in_user)
-    {
-        requested_agent_id.to_string()
-    } else if data
-        .agents
-        .iter()
-        .any(|a| a.id == data.assistant_department_agent_id && !a.is_built_in_user)
-    {
-        data.assistant_department_agent_id.clone()
-    } else {
-        data.agents
-            .iter()
-            .find(|a| !a.is_built_in_user)
-            .map(|a| a.id.clone())
-            .ok_or_else(|| "Selected agent not found.".to_string())?
-    };
-    let requested_conversation_id = input
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let source_idx = if let Some(conversation_id) = requested_conversation_id {
-        data.conversations.iter().position(|conversation| {
-            conversation.id == conversation_id
-                && conversation.summary.trim().is_empty()
-                && !conversation_is_delegate(conversation)
-        })
-    } else {
-        latest_active_conversation_index(&data, &selected_api.id, &effective_agent_id)
-    }
-    .ok_or_else(|| "当前没有可归档的活动对话。".to_string())?;
-    let source = data
-        .conversations
-        .get(source_idx)
-        .cloned()
-        .ok_or_else(|| "当前没有可归档的活动对话。".to_string())?;
-    drop(guard);
-    Ok((selected_api, resolved_api, source, effective_agent_id))
+    conversation_service().resolve_archive_target_conversation(state, input)
 }
 
 fn prepare_background_archive_active_conversation(
@@ -434,150 +382,11 @@ fn prepare_background_archive_active_conversation(
     selected_api: &ApiConfig,
     source: &Conversation,
 ) -> Result<String, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut data = state_read_app_data_cached(state)?;
-    let _ = normalize_single_active_main_conversation(&mut data);
-
-    let _source_idx = data
-        .conversations
-        .iter()
-        .position(|conversation| {
-            conversation.id == source.id
-                && conversation.summary.trim().is_empty()
-                && conversation_visible_in_foreground_lists(conversation)
-        })
-        .ok_or_else(|| "当前没有可归档的活动对话。".to_string())?;
-
-    let target_idx = data
-        .conversations
-        .iter()
-        .enumerate()
-        .filter(|(_, conversation)| {
-            conversation.id != source.id
-                && conversation.summary.trim().is_empty()
-                && conversation_visible_in_foreground_lists(conversation)
-        })
-        .max_by(|(idx_a, a), (idx_b, b)| {
-            let a_updated = a.updated_at.trim();
-            let b_updated = b.updated_at.trim();
-            let a_created = a.created_at.trim();
-            let b_created = b.created_at.trim();
-            a_updated
-                .cmp(b_updated)
-                .then_with(|| a_created.cmp(b_created))
-                .then_with(|| idx_a.cmp(idx_b))
-        })
-        .map(|(idx, _)| idx);
-
-    let active_conversation_id = if let Some(idx) = target_idx {
-        data.conversations
-            .get(idx)
-            .map(|item| item.id.clone())
-            .ok_or_else(|| "切换归档后的前台会话失败：活动会话索引无效。".to_string())?
-    } else {
-        let conversation = build_conversation_record(
-            &selected_api.id,
-            "",
-            ASSISTANT_DEPARTMENT_ID,
-            "",
-            CONVERSATION_KIND_CHAT,
-            None,
-            None,
-        );
-        let conversation = if let Some(agent) = data
-            .agents
-            .iter()
-            .find(|item| item.id == data.assistant_department_agent_id)
-        {
-            match build_user_profile_snapshot_block(&state.data_path, agent, 12) {
-                Ok(Some(snapshot)) => {
-                    let mut conversation = Conversation {
-                        user_profile_snapshot: snapshot.clone(),
-                        ..conversation
-                    };
-                    let summary_message = build_initial_summary_context_message(
-                        Some(source.summary.as_str()),
-                        Some(snapshot.as_str()),
-                        Some(&conversation.current_todos),
-                    );
-                    conversation.last_user_at = Some(summary_message.created_at.clone());
-                    conversation.updated_at = summary_message.created_at.clone();
-                    conversation.messages.push(summary_message);
-                    conversation
-                }
-                Ok(None) => {
-                    let mut conversation = conversation;
-                    let summary_message =
-                        build_initial_summary_context_message(
-                            Some(source.summary.as_str()),
-                            None,
-                            Some(&conversation.current_todos),
-                        );
-                    conversation.last_user_at = Some(summary_message.created_at.clone());
-                    conversation.updated_at = summary_message.created_at.clone();
-                    conversation.messages.push(summary_message);
-                    conversation
-                }
-                Err(err) => {
-                    runtime_log_error(format!(
-                        "[用户画像] 失败，任务=prepare_archive_active_conversation_seed_snapshot，agent_id={}，error={}",
-                        agent.id,
-                        err
-                    ));
-                    let mut conversation = conversation;
-                    let summary_message =
-                        build_initial_summary_context_message(
-                            Some(source.summary.as_str()),
-                            None,
-                            Some(&conversation.current_todos),
-                        );
-                    conversation.last_user_at = Some(summary_message.created_at.clone());
-                    conversation.updated_at = summary_message.created_at.clone();
-                    conversation.messages.push(summary_message);
-                    conversation
-                }
-            }
-        } else {
-            let mut conversation = conversation;
-            let summary_message =
-                build_initial_summary_context_message(
-                    Some(source.summary.as_str()),
-                    None,
-                    Some(&conversation.current_todos),
-                );
-            conversation.last_user_at = Some(summary_message.created_at.clone());
-            conversation.updated_at = summary_message.created_at.clone();
-            conversation.messages.push(summary_message);
-            conversation
-        };
-        let conversation_id = conversation.id.clone();
-        data.conversations.push(conversation);
-        if data
-            .main_conversation_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
-        {
-            data.main_conversation_id = Some(conversation_id.clone());
-        }
-        conversation_id
-    };
-
-    let app_config = state_read_config_cached(state)?;
-    let overview_payload = build_unarchived_conversation_overview_payload(state, &app_config, &data);
-    persist_selected_conversations_and_runtime(
+    conversation_service().prepare_background_archive_active_conversation(
         state,
-        &data,
-        std::slice::from_ref(&active_conversation_id),
-        "restore_active_conversation_from_archive",
-    )?;
-    drop(guard);
-    emit_unarchived_conversation_overview_updated_payload(state, &overview_payload);
-    Ok(active_conversation_id)
+        selected_api,
+        source,
+    )
 }
 
 fn build_force_compaction_preview_result(
@@ -1127,45 +936,11 @@ fn delete_main_conversation_and_activate_latest(
     selected_api: &ApiConfig,
     source: &Conversation,
 ) -> Result<String, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut data = state_read_app_data_cached(state)?;
-
-    let before = data.conversations.len();
-    data.conversations.retain(|conversation| {
-        !(conversation.id == source.id
-            && conversation.summary.trim().is_empty()
-            && !conversation_is_delegate(conversation))
-    });
-    if data.conversations.len() == before {
-        return Err("活动对话已变化，请重试归档。".to_string());
-    }
-
-    let _ = normalize_main_conversation_marker(&mut data, "");
-    let active_idx = ensure_active_foreground_conversation_index_atomic(
-        &mut data,
-        &state.data_path,
-        &selected_api.id,
-        "",
-    );
-    let active_conversation_id = data
-        .conversations
-        .get(active_idx)
-        .map(|item| item.id.clone())
-        .ok_or_else(|| "Failed to ensure active conversation after delete.".to_string())?;
-    persist_removed_and_selected_conversations_and_runtime(
+    conversation_service().delete_main_conversation_and_activate_latest(
         state,
-        &data,
-        std::slice::from_ref(&source.id),
-        std::slice::from_ref(&active_conversation_id),
-        "delete_active_conversation_after_compaction",
-    )?;
-    drop(guard);
-
-    cleanup_pdf_session_memory_cache_for_conversation(&source.id);
-    Ok(active_conversation_id)
+        selected_api,
+        source,
+    )
 }
 
 fn build_compaction_message(
@@ -1841,10 +1616,6 @@ async fn run_context_compaction_pipeline_inner(
     }
 
     let (host_agent, host_agent_id, user_alias) = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
         let data = state_read_app_data_cached(&state)?;
         let user_alias = data.user_alias.clone();
         let host_agent_id = choose_archive_host_agent_id(&data, source, effective_agent_id);
@@ -1854,7 +1625,6 @@ async fn run_context_compaction_pipeline_inner(
             .find(|a| a.id == host_agent_id)
             .cloned()
             .ok_or_else(|| "Host agent not found.".to_string())?;
-        drop(guard);
         (host_agent, host_agent_id, user_alias)
     };
 
@@ -1902,17 +1672,6 @@ async fn run_context_compaction_pipeline_inner(
         build_user_profile_snapshot_block(&state.data_path, &host_agent, 12)?
     };
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut data = state_read_app_data_cached(&state)?;
-
-    let conversation_idx = data
-        .conversations
-        .iter()
-        .position(|item| item.id == source.id && item.summary.trim().is_empty())
-        .ok_or_else(|| "活动对话已变化，请重试上下文整理。".to_string())?;
     let compression_message = build_compaction_message(
         &summary_with_pending_plan,
         compaction_reason,
@@ -1925,48 +1684,14 @@ async fn run_context_compaction_pipeline_inner(
             10_000,
         )),
     );
-    let compression_message_id = compression_message.id.clone();
-    {
-        let conversation = data
-            .conversations
-            .get_mut(conversation_idx)
-            .ok_or_else(|| "活动对话索引无效，请重试上下文整理。".to_string())?;
-        conversation.messages.push(compression_message.clone());
-        conversation.user_profile_snapshot = user_profile_snapshot.clone().unwrap_or_default();
-        let now = now_iso();
-        conversation.updated_at = now.clone();
-        conversation.last_user_at = Some(now);
-    }
-    let active_conversation_id = data
-        .conversations
-        .get(conversation_idx)
-        .map(|item| item.id.clone());
-    persist_single_conversation_runtime_fast(&state, &data, &source.id)?;
-
-    drop(guard);
-
-    {
-        let verify_guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-        let verify_data = state_read_app_data_cached(&state)?;
-        let persisted = verify_data
-            .conversations
-            .iter()
-            .find(|item| item.id == source.id && item.summary.trim().is_empty())
-            .map(|conversation| {
-                conversation
-                    .messages
-                    .iter()
-                    .any(|message| message.id == compression_message_id)
-            })
-            .unwrap_or(false);
-        drop(verify_guard);
-        if !persisted {
-            return Err("上下文整理消息写入校验失败：已执行整理但未找到落盘消息，请重试。".to_string());
-        }
-    }
+    let persist_result = conversation_service().persist_compaction_message(
+        state,
+        source,
+        &compression_message,
+        user_profile_snapshot.clone(),
+    )?;
+    let active_conversation_id = persist_result.active_conversation_id;
+    let compression_message_id = persist_result.compression_message_id;
     eprintln!(
         "[ARCHIVE-PIPELINE] 上下文整理消息写入校验通过: conversation_id={}, message_id={}",
         source.id,
@@ -2029,10 +1754,6 @@ async fn run_archive_pipeline_inner(
     trace_id: &str,
 ) -> Result<ForceArchiveResult, String> {
     let is_main_conversation = {
-        let _guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
         let data = state_read_app_data_cached(&state)?;
         data.main_conversation_id.as_deref().map(str::trim) == Some(source.id.as_str())
     };
@@ -2126,10 +1847,6 @@ async fn run_archive_pipeline_inner(
     }
 
     let (host_agent, host_agent_id, user_alias, memories) = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
         let data = state_read_app_data_cached(&state)?;
         let user_alias = data.user_alias.clone();
         let host_agent_id = choose_archive_host_agent_id(&data, source, effective_agent_id);
@@ -2140,7 +1857,6 @@ async fn run_archive_pipeline_inner(
             .cloned()
             .ok_or_else(|| "Host agent not found.".to_string())?;
         let host_private_memory_enabled = host_agent.private_memory_enabled;
-        drop(guard);
         let memories = memory_store_list_memories_visible_for_agent(
             &state.data_path,
             &host_agent_id,
@@ -2176,10 +1892,6 @@ async fn run_archive_pipeline_inner(
     let applied_report =
         apply_summary_context_result(&state.data_path, &host_agent, &deduped_recall, &summary_draft)?;
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let mut data = state_read_app_data_cached(&state)?;
     let _source_conversation_idx = data
         .conversations
@@ -2214,7 +1926,7 @@ async fn run_archive_pipeline_inner(
             target_conversation_ids.push(active_conversation_id_value.clone());
         }
     }
-    persist_selected_conversations_and_runtime(
+    conversation_service().persist_selected_conversations_snapshot(
         &state,
         &data,
         &target_conversation_ids,
@@ -2225,8 +1937,6 @@ async fn run_archive_pipeline_inner(
     if let Err(e) = cleanup_pdf_cache_for_conversation(&state, &source.id) {
         eprintln!("[归档] 清理 PDF 缓存失败: conversation={}, error={}", source.id, e);
     }
-
-    drop(guard);
 
     if let Some(active_conversation_id_value) = active_conversation_id.as_deref() {
         emit_archive_history_flushed_event(

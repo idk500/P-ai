@@ -490,12 +490,8 @@ async fn tool_review_run_for_call_internal(
 ) -> Result<ToolReviewItemDetail, String> {
     let review_api_config_id = current_tool_review_api_config_id(state)?
         .ok_or_else(|| "未配置工具审查模型。".to_string())?;
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let conversation = state_read_conversation_cached(state, conversation_id)?;
-    drop(guard);
+    let conversation =
+        with_tool_review_conversation(state, conversation_id, |conversation| Ok(conversation.clone()))?;
 
     let item = tool_review_find_item(&conversation, call_id)?;
     let context = tool_review_build_context(&item);
@@ -523,17 +519,15 @@ async fn tool_review_run_for_call_internal(
         }),
     };
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut conversation = state_read_conversation_cached(state, conversation_id)?;
-    tool_review_write_call_review(&mut conversation, call_id, &review_value)?;
-    state_write_conversation_cached(state, &conversation)?;
-    drop(guard);
-
-    let refreshed = tool_review_find_item(&conversation, call_id)?;
-    Ok(tool_review_item_detail_from_collected(&refreshed))
+    conversation_service().update_unarchived_conversation_by_id(
+        state,
+        conversation_id,
+        |conversation| {
+            tool_review_write_call_review(conversation, call_id, &review_value)?;
+            let refreshed = tool_review_find_item(conversation, call_id)?;
+            Ok(tool_review_item_detail_from_collected(&refreshed))
+        },
+    )
 }
 
 fn tool_review_last_related_message_index(
@@ -860,25 +854,11 @@ fn with_tool_review_conversation<T>(
     if normalized_conversation_id.is_empty() {
         return Err("conversationId 不能为空。".to_string());
     }
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let result = {
-        let cached = state
-            .cached_conversations
-            .lock()
-            .map_err(|err| format!("Failed to lock cached conversations: {:?}", err))?;
-        if let Some(conversation) = cached.get(normalized_conversation_id) {
-            reader(conversation)?
-        } else {
-            drop(cached);
-            let conversation = state_read_conversation_cached(state, normalized_conversation_id)?;
-            reader(&conversation)?
-        }
-    };
-    drop(guard);
-    Ok(result)
+    conversation_service().with_unarchived_conversation_by_id(
+        state,
+        normalized_conversation_id,
+        reader,
+    )
 }
 
 #[tauri::command]
@@ -976,12 +956,9 @@ async fn run_tool_review_for_batch(
     if conversation_id.is_empty() || batch_key.is_empty() {
         return Err("conversationId 和 batchKey 不能为空。".to_string());
     }
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let conversation = state_read_conversation_cached(&state, conversation_id)?;
-    drop(guard);
+    let conversation = with_tool_review_conversation(state.inner(), conversation_id, |conversation| {
+        Ok(conversation.clone())
+    })?;
     let batch = collect_tool_review_batches_internal(&conversation)
         .into_iter()
         .find(|item| item.batch_key == batch_key)
@@ -1008,12 +985,9 @@ async fn submit_tool_review_batch(
         return Err("conversationId 和 batchKey 不能为空。".to_string());
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let conversation = state_read_conversation_cached(&state, conversation_id)?;
-    drop(guard);
+    let conversation = with_tool_review_conversation(state.inner(), conversation_id, |conversation| {
+        Ok(conversation.clone())
+    })?;
     let batch_to_review = collect_tool_review_batches_internal(&conversation)
         .into_iter()
         .find(|item| item.batch_key == batch_key)
@@ -1022,12 +996,9 @@ async fn submit_tool_review_batch(
         tool_review_run_for_call_internal(state.inner(), conversation_id, &item.call_id).await?;
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let conversation = state_read_conversation_cached(&state, conversation_id)?;
-    drop(guard);
+    let conversation = with_tool_review_conversation(state.inner(), conversation_id, |conversation| {
+        Ok(conversation.clone())
+    })?;
     let batch = collect_tool_review_batches_internal(&conversation)
         .into_iter()
         .find(|item| item.batch_key == batch_key)
@@ -1068,19 +1039,21 @@ async fn submit_tool_review_batch(
         return Err("最终提交审查未返回内容。".to_string());
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-    let mut conversation = state_read_conversation_cached(&state, conversation_id)?;
-    let refreshed_batch = collect_tool_review_batches_internal(&conversation)
-        .into_iter()
-        .find(|item| item.batch_key == batch_key)
-        .ok_or_else(|| format!("Tool review batch not found: {batch_key}"))?;
-    let (report, report_message_id) =
-        tool_review_upsert_report_message(&mut conversation, &refreshed_batch, &report_text);
-    state_write_conversation_cached(&state, &conversation)?;
-    drop(guard);
+    let (report, report_message_id) = conversation_service().update_unarchived_conversation_by_id(
+        state.inner(),
+        conversation_id,
+        |conversation| {
+            let refreshed_batch = collect_tool_review_batches_internal(conversation)
+                .into_iter()
+                .find(|item| item.batch_key == batch_key)
+                .ok_or_else(|| format!("Tool review batch not found: {batch_key}"))?;
+            Ok(tool_review_upsert_report_message(
+                conversation,
+                &refreshed_batch,
+                &report_text,
+            ))
+        },
+    )?;
 
     Ok(SubmitToolReviewBatchOutput {
         batch_key: batch_key.to_string(),

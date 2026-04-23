@@ -429,22 +429,11 @@ fn resolve_chat_workspace_conversation_id(
     {
         return Ok(conversation_id.to_string());
     }
-
-    let data = state_read_app_data_cached(state)?;
-    let agent_id = agent_id.trim();
-    if let Some(conversation) = data
-        .conversations
-        .iter()
-        .rev()
-        .find(|item| {
-            item.summary.trim().is_empty()
-                && !conversation_is_delegate(item)
-                && (agent_id.is_empty() || item.agent_id.trim() == agent_id)
+    conversation_service()
+        .resolve_latest_foreground_conversation_id(state, agent_id)
+        .and_then(|value| {
+            value.ok_or_else(|| "当前没有可用的活跃会话，需要提供 conversationId。".to_string())
         })
-    {
-        return Ok(conversation.id.clone());
-    }
-    Err("当前没有可用的活跃会话，需要提供 conversationId。".to_string())
 }
 
 fn apply_conversation_chat_workspace_changes(
@@ -485,34 +474,12 @@ fn apply_conversation_chat_workspace_changes(
             .ok_or_else(|| format!("指定会话不存在：{conversation_id}"));
     }
 
-    let mut data = state_read_app_data_cached(state)?;
-    let Some(conversation) = data
-        .conversations
-        .iter_mut()
-        .find(|item| item.id == conversation_id)
-    else {
-        return Err(format!("指定会话不存在：{conversation_id}"));
-    };
-    let original_path = conversation.shell_workspace_path.clone();
-    let original_workspaces = conversation.shell_workspaces.clone();
-    if let Some(value) = shell_workspace_path {
-        conversation.shell_workspace_path = value;
-    }
-    if let Some(value) = shell_workspaces {
-        conversation.shell_workspaces = value;
-    }
-    if conversation.shell_workspace_path.as_deref().map(str::trim).filter(|value| !value.is_empty()).is_some()
-        && terminal_workspace_path_from_conversation(state, conversation).is_none()
-    {
-        conversation.shell_workspace_path = None;
-    }
-    if conversation.shell_workspace_path == original_path
-        && conversation.shell_workspaces == original_workspaces
-    {
-        return Ok(conversation.clone());
-    }
-    let updated = conversation.clone();
-    state_write_conversation_with_chat_index_cached(state, &updated)?;
+    let updated = conversation_service().update_persisted_conversation_shell_workspace(
+        state,
+        conversation_id,
+        shell_workspace_path,
+        shell_workspaces,
+    )?;
     mark_prompt_cache_rebuild_for_system_environment_by_conversation(state, conversation_id);
     Ok(updated)
 }

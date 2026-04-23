@@ -46,18 +46,9 @@ fn tool_session_is_remote_im_contact_conversation(
     let Some((_, conversation_id)) = tool_session_id.split_once("::") else {
         return false;
     };
-    let conversation_id = conversation_id.trim();
-    if conversation_id.is_empty() {
-        return false;
-    }
-    let Ok(data) = state_read_app_data_cached(state) else {
-        return false;
-    };
-    data.conversations.iter().any(|conversation| {
-        conversation.id == conversation_id
-            && conversation.summary.trim().is_empty()
-            && conversation_is_remote_im_contact(conversation)
-    })
+    conversation_service()
+        .is_remote_im_contact_conversation(state, conversation_id)
+        .unwrap_or(false)
 }
 
 async fn assemble_runtime_tools(

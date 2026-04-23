@@ -295,14 +295,9 @@ fn sync_weixin_oc_contact_from_user_id(
     if normalized_user_id.is_empty() {
         return Err("当前登录状态没有返回联系人 user_id，暂时无法补录联系人".to_string());
     }
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
     let mut data = state_read_app_data_cached(state)?;
     let result = upsert_weixin_oc_contact(&mut data, channel, normalized_user_id);
     persist_runtime_state_only(state, &data, "sync_weixin_oc_contact_from_user_id")?;
-    drop(guard);
     Ok(result)
 }
 

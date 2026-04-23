@@ -106,12 +106,7 @@ async fn stt_transcribe(
     }
 
     let app_config = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
         let cfg = read_config(&state.config_path)?;
-        drop(guard);
         cfg
     };
 

@@ -120,9 +120,9 @@ struct UserMentionFailurePlan {
     reason: String,
 }
 
-fn build_user_mention_context_snapshot(
+fn build_user_mention_context_snapshot_with_agents(
     conversation: &Conversation,
-    data: &AppData,
+    agents: &[AgentProfile],
     latest_user_text: &str,
 ) -> String {
     let mut lines = Vec::<String>::new();
@@ -144,7 +144,7 @@ fn build_user_mention_context_snapshot(
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .unwrap_or("");
-                    data.agents
+                    agents
                         .iter()
                         .find(|agent| agent.id == speaker_agent_id)
                         .map(|agent| agent.name.trim().to_string())
@@ -316,22 +316,11 @@ fn append_delegate_result_message_and_emit(
     if conversation_id.is_empty() {
         return Err("缺少 conversation_id，无法写回委托结果".to_string());
     }
-    let _guard = lock_conversation_with_metrics(app_state, "append_delegate_result_message")?;
-    let mut data = state_read_app_data_cached(app_state)?;
-    let conversation = data
-        .conversations
-        .iter_mut()
-        .find(|item| {
-            item.id == conversation_id
-                && item.summary.trim().is_empty()
-                && item.archived_at.as_deref().map(str::trim).unwrap_or("").is_empty()
-                && !conversation_is_delegate(item)
-        })
-        .ok_or_else(|| format!("原会话不可写，conversationId={conversation_id}"))?;
-    conversation.messages.push(message.clone());
-    conversation.updated_at = message.created_at.clone();
-    conversation.last_assistant_at = Some(message.created_at.clone());
-    persist_single_conversation_runtime_fast(app_state, &data, conversation_id)?;
+    conversation_service().append_message_to_unarchived_conversation(
+        app_state,
+        conversation_id,
+        message,
+    )?;
     emit_conversation_message_appended_event(app_state, conversation_id, message);
 
     if continue_main_assistant {
@@ -605,12 +594,11 @@ async fn send_chat_message(
     // 获取或创建会话ID
     let prepare_started_at = std::time::Instant::now();
     let (conversation_id, department_id, agent_id, model_config_id, mention_plans, mention_failures) = {
-        let _guard = lock_conversation_with_metrics(&state, "send_chat_message_prepare_conversation")?;
         let config_started_at = std::time::Instant::now();
         let app_config = state_read_config_cached(&state)?;
         let config_elapsed_ms = config_started_at.elapsed().as_millis();
         let app_data_started_at = std::time::Instant::now();
-        let mut data = state_read_app_data_cached(&state)?;
+        let data = state_read_app_data_cached(&state)?;
         let app_data_elapsed_ms = app_data_started_at.elapsed().as_millis();
         let department_started_at = std::time::Instant::now();
         let (department, agent_id) = resolve_session_binding_for_send(
@@ -626,80 +614,36 @@ async fn send_chat_message(
         }
 
         let conversation_started_at = std::time::Instant::now();
-        let conversation_id = if let Some(cid) = session
-            .conversation_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            if data.conversations.iter().any(|conv| {
-                conv.id == cid
-                    && conv.summary.trim().is_empty()
-            }) {
-                cid.to_string()
-            } else {
-                let idx = ensure_active_foreground_conversation_index_atomic(
-                    &mut data,
-                    &state.data_path,
-                    &api_config_id,
-                    &agent_id,
-                );
-                let fallback_id = data.conversations
-                    .get(idx)
-                    .map(|item| item.id.clone())
-                    .ok_or_else(|| "活动会话索引超出范围".to_string())?;
-                let reject_reason = data
-                    .conversations
-                    .iter()
-                    .find(|conv| conv.id == cid)
-                    .map(|conv| {
-                        if !conv.summary.trim().is_empty() {
-                            "summary_present"
-                        } else {
-                            "unknown"
-                        }
-                    })
-                    .unwrap_or("not_found");
+        let resolved_conversation = conversation_service().resolve_send_target_conversation(
+            &state,
+            session.conversation_id.as_deref(),
+            &api_config_id,
+            &department.id,
+            &agent_id,
+        )?;
+        let conversation_elapsed_ms = conversation_started_at.elapsed().as_millis();
+        if let Some(reject_reason) = resolved_conversation.requested_reject_reason.as_deref() {
+            if let Some(requested_cid) = session
+                .conversation_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
                 eprintln!(
                     "[聊天] 会话 conversation_id 被拒绝，已选择回退会话: requested_cid={}, reject_reason={}, fallback_cid={}, department_id={}, agent_id={}",
-                    cid,
+                    requested_cid,
                     reject_reason,
-                    fallback_id,
+                    resolved_conversation.conversation_id,
                     department.id,
                     agent_id
                 );
-                fallback_id
             }
-        } else {
-            let idx = ensure_active_foreground_conversation_index_atomic(
-                &mut data,
-                &state.data_path,
-                &api_config_id,
-                &agent_id,
-            );
-            data.conversations
-                .get(idx)
-                .map(|item| item.id.clone())
-                .ok_or_else(|| "活动会话索引超出范围".to_string())?
-        };
-        let conversation_elapsed_ms = conversation_started_at.elapsed().as_millis();
-        let conversation_snapshot = data
-            .conversations
-            .iter()
-            .find(|item| item.id == conversation_id && item.summary.trim().is_empty())
-            .cloned()
-            .ok_or_else(|| format!("未找到目标会话，conversationId={conversation_id}"))?;
-        if let Some(conversation) = data
-            .conversations
-            .iter_mut()
-            .find(|item| item.id == conversation_id && item.summary.trim().is_empty())
-        {
-            conversation.department_id = department.id.clone();
-            conversation.agent_id = agent_id.clone();
         }
-        let mention_background = build_user_mention_context_snapshot(
+        let conversation_id = resolved_conversation.conversation_id.clone();
+        let conversation_snapshot = resolved_conversation.conversation_snapshot.clone();
+        let mention_background = build_user_mention_context_snapshot_with_agents(
             &conversation_snapshot,
-            &data,
+            &resolved_conversation.agents,
             &display_text,
         );
         let mut mention_plans = Vec::<UserMentionPlan>::new();
@@ -722,7 +666,8 @@ async fn send_chat_message(
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned)
                 .or_else(|| {
-                    data.agents
+                    resolved_conversation
+                        .agents
                         .iter()
                         .find(|agent| agent.id == target_agent_id)
                         .map(|agent| agent.name.trim().to_string())
@@ -764,7 +709,11 @@ async fn send_chat_message(
                 });
                 continue;
             }
-            if !data.agents.iter().any(|agent| agent.id == target_agent_id && !agent.is_built_in_user) {
+            if !resolved_conversation
+                .agents
+                .iter()
+                .any(|agent| agent.id == target_agent_id && !agent.is_built_in_user)
+            {
                 mention_failures.push(UserMentionFailurePlan {
                     root_conversation_id: conversation_id.clone(),
                     source_agent_id: agent_id.clone(),
@@ -801,17 +750,13 @@ async fn send_chat_message(
             });
         }
 
-        let persist_started_at = std::time::Instant::now();
-        persist_single_conversation_runtime_fast(&state, &data, &conversation_id)?;
-        let persist_elapsed_ms = persist_started_at.elapsed().as_millis();
         eprintln!(
-            "[聊天发送] 发送前准备耗时：总计={}ms，读取配置={}ms，读取应用数据={}ms，解析部门={}ms，定位会话={}ms，持久化={}ms，conversation_id={}，department_id={}，agent_id={}",
+            "[聊天发送] 发送前准备耗时：总计={}ms，读取配置={}ms，读取应用数据={}ms，解析部门={}ms，会话解析+持久化={}ms，conversation_id={}，department_id={}，agent_id={}",
             prepare_started_at.elapsed().as_millis(),
             config_elapsed_ms,
             app_data_elapsed_ms,
             department_elapsed_ms,
             conversation_elapsed_ms,
-            persist_elapsed_ms,
             conversation_id,
             department.id,
             agent_id
@@ -982,13 +927,11 @@ async fn send_user_mention_message_inner(
 
     let prepare_started_at = std::time::Instant::now();
     let (conversation_id, department_id, agent_id, model_config_id, mention_plans, mention_failures) = {
-        let _guard =
-            lock_conversation_with_metrics(state, "send_user_mention_message_prepare_conversation")?;
         let config_started_at = std::time::Instant::now();
         let app_config = state_read_config_cached(state)?;
         let config_elapsed_ms = config_started_at.elapsed().as_millis();
         let app_data_started_at = std::time::Instant::now();
-        let mut data = state_read_app_data_cached(state)?;
+        let data = state_read_app_data_cached(state)?;
         let app_data_elapsed_ms = app_data_started_at.elapsed().as_millis();
         let department_started_at = std::time::Instant::now();
         let (department, agent_id) = resolve_session_binding_for_send(
@@ -1004,60 +947,19 @@ async fn send_user_mention_message_inner(
         }
 
         let conversation_started_at = std::time::Instant::now();
-        let conversation_id = if let Some(cid) = session
-            .conversation_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            if data
-                .conversations
-                .iter()
-                .any(|conv| conv.id == cid && conv.summary.trim().is_empty())
-            {
-                cid.to_string()
-            } else {
-                let idx = ensure_active_foreground_conversation_index_atomic(
-                    &mut data,
-                    &state.data_path,
-                    &api_config_id,
-                    &agent_id,
-                );
-                data.conversations
-                    .get(idx)
-                    .map(|item| item.id.clone())
-                    .ok_or_else(|| "活动会话索引超出范围".to_string())?
-            }
-        } else {
-            let idx = ensure_active_foreground_conversation_index_atomic(
-                &mut data,
-                &state.data_path,
-                &api_config_id,
-                &agent_id,
-            );
-            data.conversations
-                .get(idx)
-                .map(|item| item.id.clone())
-                .ok_or_else(|| "活动会话索引超出范围".to_string())?
-        };
+        let resolved_conversation = conversation_service().resolve_send_target_conversation(
+            &state,
+            session.conversation_id.as_deref(),
+            &api_config_id,
+            &department.id,
+            &agent_id,
+        )?;
         let conversation_elapsed_ms = conversation_started_at.elapsed().as_millis();
-        let conversation_snapshot = data
-            .conversations
-            .iter()
-            .find(|item| item.id == conversation_id && item.summary.trim().is_empty())
-            .cloned()
-            .ok_or_else(|| format!("未找到目标会话，conversationId={conversation_id}"))?;
-        if let Some(conversation) = data
-            .conversations
-            .iter_mut()
-            .find(|item| item.id == conversation_id && item.summary.trim().is_empty())
-        {
-            conversation.department_id = department.id.clone();
-            conversation.agent_id = agent_id.clone();
-        }
-        let mention_background = build_user_mention_context_snapshot(
+        let conversation_id = resolved_conversation.conversation_id.clone();
+        let conversation_snapshot = resolved_conversation.conversation_snapshot.clone();
+        let mention_background = build_user_mention_context_snapshot_with_agents(
             &conversation_snapshot,
-            &data,
+            &resolved_conversation.agents,
             &display_text,
         );
         let mut mention_plans = Vec::<UserMentionPlan>::new();
@@ -1080,7 +982,8 @@ async fn send_user_mention_message_inner(
                 .filter(|value| !value.is_empty())
                 .map(ToOwned::to_owned)
                 .or_else(|| {
-                    data.agents
+                    resolved_conversation
+                        .agents
                         .iter()
                         .find(|agent| agent.id == target_agent_id)
                         .map(|agent| agent.name.trim().to_string())
@@ -1122,7 +1025,7 @@ async fn send_user_mention_message_inner(
                 });
                 continue;
             }
-            if !data
+            if !resolved_conversation
                 .agents
                 .iter()
                 .any(|agent| agent.id == target_agent_id && !agent.is_built_in_user)
@@ -1163,17 +1066,13 @@ async fn send_user_mention_message_inner(
             });
         }
 
-        let persist_started_at = std::time::Instant::now();
-        persist_single_conversation_runtime_fast(state, &data, &conversation_id)?;
-        let persist_elapsed_ms = persist_started_at.elapsed().as_millis();
         eprintln!(
-            "[聊天发送] 用户@委托发送前准备耗时：总计={}ms，读取配置={}ms，读取应用数据={}ms，解析部门={}ms，定位会话={}ms，持久化={}ms，conversation_id={}，department_id={}，agent_id={}，mention_count={}",
+            "[聊天发送] 用户@委托发送前准备耗时：总计={}ms，读取配置={}ms，读取应用数据={}ms，解析部门={}ms，会话解析+持久化={}ms，conversation_id={}，department_id={}，agent_id={}，mention_count={}",
             prepare_started_at.elapsed().as_millis(),
             config_elapsed_ms,
             app_data_elapsed_ms,
             department_elapsed_ms,
             conversation_elapsed_ms,
-            persist_elapsed_ms,
             conversation_id,
             department.id,
             agent_id,
@@ -1380,123 +1279,22 @@ async fn stop_chat_message(
         return Ok(build_stop_result(false, None, None));
     }
 
-    let _guard = lock_conversation_with_metrics(&state, "stop_chat_generation_persist_partial")?;
-    let app_config = state_read_config_cached(&state)?;
-    let mut data = state_read_app_data_cached(&state)?;
-    let api_config_id = if let Some(_conversation_id) = requested_conversation_id.as_deref() {
-        requested_department_id
-            .as_deref()
-            .and_then(|id| department_by_id(&app_config, id))
-            .map(department_primary_api_config_id)
-            .or_else(|| {
-                department_for_agent_id(&app_config, &agent_id).map(department_primary_api_config_id)
-            })
-            .or_else(|| resolve_selected_api_config(&app_config, None).map(|api| api.id.clone()))
-            .ok_or_else(|| "Missing available API config for stop request".to_string())?
-    } else {
-        requested_department_id
-            .as_deref()
-            .and_then(|id| department_by_id(&app_config, id))
-            .map(department_primary_api_config_id)
-            .or_else(|| {
-                department_for_agent_id(&app_config, &agent_id).map(department_primary_api_config_id)
-            })
-            .or_else(|| resolve_selected_api_config(&app_config, None).map(|api| api.id.clone()))
-            .ok_or_else(|| "Missing available API config for stop request".to_string())?
-    };
-    if !app_config.api_configs.iter().any(|api| api.id == api_config_id) {
-        return Err(format!("Selected API config '{api_config_id}' not found."));
-    }
-    let runtime_requested = requested_conversation_id
-        .as_deref()
-        .filter(|conversation_id| {
-            delegate_runtime_thread_conversation_get(state.inner(), conversation_id)
-                .ok()
-                .flatten()
-                .is_some()
-        })
-        .map(ToOwned::to_owned);
-    let mut runtime_conversation = if let Some(conversation_id) = runtime_requested.as_deref() {
-        delegate_runtime_thread_conversation_get(state.inner(), conversation_id)?
-    } else {
-        None
-    };
-    let idx = if runtime_conversation.is_some() {
-        None
-    } else {
-        latest_active_conversation_index(&data, "", &agent_id)
-    };
-    let conversation = if let Some(conversation) = runtime_conversation.as_mut() {
-        conversation
-    } else {
-        let Some(idx) = idx else {
-            return Ok(build_stop_result(false, None, None));
-        };
-        data.conversations
-            .get_mut(idx)
-            .ok_or_else(|| "Active conversation index is out of bounds.".to_string())?
-    };
-
-    // If the latest message is already an assistant message, do not append duplicate partial output.
-    if conversation
-        .messages
-        .last()
-        .map(|m| m.role == "assistant")
-        .unwrap_or(false)
-    {
-        let conversation_id = conversation.id.clone();
-        let assistant_message = conversation.messages.last().cloned();
-        clear_inflight_completed_tool_history(state.inner(), &chat_key)?;
-        return Ok(build_stop_result(false, Some(conversation_id), assistant_message));
-    }
-
-    let provider_meta = if partial_reasoning_standard.is_empty() && partial_reasoning_inline.is_empty()
-    {
-        None
-    } else {
-        Some(serde_json::json!({
-            "reasoningStandard": partial_reasoning_standard,
-            "reasoningInline": partial_reasoning_inline
-        }))
-    };
-
-    let now = now_iso();
-    let assistant_message = ChatMessage {
-        id: Uuid::new_v4().to_string(),
-        role: "assistant".to_string(),
-        created_at: now.clone(),
-        speaker_agent_id: Some(agent_id.clone()),
-        parts: vec![MessagePart::Text {
-            text: partial_assistant_text.clone(),
-        }],
-        extra_text_blocks: Vec::new(),
-        provider_meta,
-        tool_call: if completed_tool_history.is_empty() {
-            None
-        } else {
-            Some(completed_tool_history)
-        },
-        mcp_call: None,
-    };
-    conversation.messages.push(assistant_message.clone());
-    conversation.updated_at = now.clone();
-    conversation.last_assistant_at = Some(now);
-    let conversation_id = conversation.id.clone();
-
-    if let Some(conversation) = runtime_conversation {
-        delegate_runtime_thread_conversation_update(state.inner(), &conversation_id, conversation)?;
-    } else {
-        let persisted_conversation = data
-            .conversations
-            .iter()
-            .find(|item| item.id == conversation_id)
-            .cloned()
-            .ok_or_else(|| "活动会话不存在，无法保存中断回复。".to_string())?;
-        state_write_conversation_with_chat_index_cached(state.inner(), &persisted_conversation)?;
-    }
+    let persist_result = conversation_service().persist_stop_chat_partial_message(
+        state.inner(),
+        requested_conversation_id.as_deref(),
+        requested_department_id.as_deref(),
+        &agent_id,
+        &partial_assistant_text,
+        &partial_reasoning_standard,
+        &partial_reasoning_inline,
+        &completed_tool_history,
+    )?;
     clear_inflight_completed_tool_history(state.inner(), &chat_key)?;
-
-    Ok(build_stop_result(true, Some(conversation_id), Some(assistant_message)))
+    Ok(build_stop_result(
+        persist_result.persisted,
+        persist_result.conversation_id,
+        persist_result.assistant_message,
+    ))
 }
 
 #[tauri::command]

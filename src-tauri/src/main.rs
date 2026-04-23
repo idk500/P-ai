@@ -47,6 +47,7 @@ include!("features/chat/message_semantics.rs");
 include!("features/chat/conversation.rs");
 include!("features/chat/prompt_manager.rs");
 include!("features/chat/conversation_prompt_service.rs");
+include!("features/chat/conversation_service/mod.rs");
 include!("features/chat/model_runtime.rs");
 include!("features/chat/scheduler.rs");
 include!("features/remote_im/onebot_v11_ws.rs");
@@ -341,6 +342,9 @@ fn main() {
             }
             if let Err(err) = start_app_data_persist_worker(app_handle.state::<AppState>().inner()) {
                 eprintln!("[启动] 启动后台持久化服务失败: {err}");
+            }
+            if let Err(err) = start_conversation_persist_worker(app_handle.state::<AppState>().inner()) {
+                eprintln!("[启动] 启动会话后台持久化服务失败: {err}");
             }
             if let Err(err) = start_record_hotkey_probe(
                 app_handle.clone(),

@@ -19,17 +19,12 @@ async fn get_prompt_preview(
     preview_mode: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<PromptPreview, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
-
     let mut app_config = read_config(&state.config_path)?;
     let api_config = resolve_selected_api_config(&app_config, input.api_config_id.as_deref())
         .ok_or_else(|| "No API config available".to_string())?;
     let mut resolved_api = resolve_api_config(&app_config, Some(&api_config.id))?;
 
-    let mut data = read_app_data(&state.data_path)?;
+    let mut data = state_read_app_data_cached(&state)?;
     merge_private_organization_into_runtime_data(&state.data_path, &mut app_config, &mut data)?;
     let requested_agent_id = input.agent_id.trim();
     let effective_agent_id = if !requested_agent_id.is_empty()
@@ -61,53 +56,11 @@ async fn get_prompt_preview(
         .ok_or_else(|| "Selected agent not found.".to_string())?;
     let preview_mode = parse_prompt_preview_mode(preview_mode.as_deref());
 
-    let mut conversation = input
-        .conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .and_then(|conversation_id| {
-            data.conversations
-                .iter()
-                .find(|item| {
-                    item.id == conversation_id
-                        && item.summary.trim().is_empty()
-                        && !conversation_is_delegate(item)
-                })
-                .cloned()
-        })
-        .or_else(|| {
-            latest_active_conversation_index(&data, "", &effective_agent_id)
-                .and_then(|idx| data.conversations.get(idx).cloned())
-        })
-        .unwrap_or_else(|| Conversation {
-            id: "preview".to_string(),
-            title: "Preview".to_string(),
-            agent_id: effective_agent_id.clone(),
-            department_id: ASSISTANT_DEPARTMENT_ID.to_string(),
-            bound_conversation_id: None,
-            parent_conversation_id: None,
-            child_conversation_ids: Vec::new(),
-            fork_message_cursor: None,
-            last_read_message_id: String::new(),
-            conversation_kind: CONVERSATION_KIND_CHAT.to_string(),
-            root_conversation_id: None,
-            delegate_id: None,
-            created_at: now_iso(),
-            updated_at: now_iso(),
-            last_user_at: None,
-            last_assistant_at: None,
-            status: "active".to_string(),
-            summary: String::new(),
-            user_profile_snapshot: String::new(),
-            shell_workspace_path: None,
-            shell_workspaces: Vec::new(),
-            archived_at: None,
-            messages: Vec::new(),
-            current_todos: Vec::new(),
-            memory_recall_table: Vec::new(),
-            plan_mode_enabled: false,
-        });
+    let mut conversation = conversation_service().resolve_prompt_preview_conversation(
+        &data,
+        input.conversation_id.as_deref(),
+        &effective_agent_id,
+    );
     let latest_user_message = conversation
         .messages
         .iter()
@@ -222,8 +175,6 @@ async fn get_prompt_preview(
             )
         }
     };
-    drop(guard);
-
     let model_name = if api_config.model.trim().is_empty() {
         resolved_api.model.clone()
     } else {
@@ -370,38 +321,7 @@ fn archive_to_conversation(archive: ConversationArchive) -> Conversation {
 
 #[tauri::command]
 fn list_archives(state: State<'_, AppState>) -> Result<Vec<ArchiveSummary>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
-
-    let data = state_read_app_data_cached(&state)?;
-    let app_config = read_config(&state.config_path)?;
-    drop(guard);
-
-    let mut summaries = data
-        .conversations
-        .iter()
-        .filter(|c| !c.summary.trim().is_empty())
-        .map(|archive| {
-            let api_config_id = department_for_agent_id(&app_config, &archive.agent_id)
-                .map(department_primary_api_config_id)
-                .unwrap_or_default();
-            ArchiveSummary {
-                archive_id: archive.id.clone(),
-                archived_at: archive
-                    .archived_at
-                    .clone()
-                    .unwrap_or_else(|| archive.updated_at.clone()),
-                title: archive_first_user_preview(archive, &app_config.ui_language),
-                message_count: archive.messages.len(),
-                api_config_id,
-                agent_id: archive.agent_id.clone(),
-            }
-        })
-        .collect::<Vec<_>>();
-    summaries.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
-    Ok(summaries)
+    conversation_service().list_archives(state.inner())
 }
 
 #[tauri::command]
@@ -409,23 +329,7 @@ fn get_archive_messages(
     archive_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<ChatMessage>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
-
-    let data = state_read_app_data_cached(&state)?;
-    drop(guard);
-
-    let archive = data
-        .conversations
-        .iter()
-        .find(|c| c.id == archive_id && !c.summary.trim().is_empty())
-        .ok_or_else(|| "Archive not found".to_string())?;
-
-    let mut messages = archive.messages.clone();
-    materialize_chat_message_parts_from_media_refs(&mut messages, &state.data_path);
-    Ok(messages)
+    conversation_service().read_archive_messages(state.inner(), &archive_id)
 }
 
 #[tauri::command]
@@ -433,51 +337,10 @@ fn get_archive_summary(
     archive_id: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
-
-    let data = state_read_app_data_cached(&state)?;
-    drop(guard);
-
-    let archive = data
-        .conversations
-        .iter()
-        .find(|c| c.id == archive_id && !c.summary.trim().is_empty())
-        .ok_or_else(|| "Archive not found".to_string())?;
-
-    Ok(archive.summary.clone())
+    conversation_service().read_archive_summary(state.inner(), &archive_id)
 }
 
 #[tauri::command]
 fn delete_archive(archive_id: String, state: State<'_, AppState>) -> Result<(), String> {
-    if archive_id.trim().is_empty() {
-        return Err("archiveId is required".to_string());
-    }
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
-
-    let mut data = state_read_app_data_cached(&state)?;
-    let before = data.conversations.len();
-    data.conversations
-        .retain(|c| !(c.id == archive_id && !c.summary.trim().is_empty()));
-
-    if data.conversations.len() == before {
-        drop(guard);
-        return Err("Archive not found".to_string());
-    }
-
-    persist_removed_and_selected_conversations_and_runtime(
-        &state,
-        &data,
-        std::slice::from_ref(&archive_id),
-        &[],
-        "delete_archive",
-    )?;
-    drop(guard);
-    Ok(())
+    conversation_service().delete_archive(state.inner(), &archive_id)
 }

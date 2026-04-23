@@ -322,20 +322,15 @@ fn persist_aliyun_multimodal_cache_conversation_update(
         );
     }
 
-    let _guard = lock_conversation_with_metrics(state, "aliyun_multimodal_cache_persist")?;
-    let mut data = state_read_app_data_cached(state)?;
-    let Some(index) = data
-        .conversations
-        .iter()
-        .position(|item| item.id == conversation.id)
-    else {
-        return Err(format!(
-            "写回百炼多模态缓存失败：会话不存在，conversation_id={}",
-            conversation.id
-        ));
-    };
-    data.conversations[index] = conversation.clone();
-    state_write_conversation_with_chat_index_cached(state, conversation)?;
+    conversation_service()
+        .read_persisted_conversation(state, &conversation.id)
+        .map_err(|err| {
+            format!(
+                "写回百炼多模态缓存失败：读取会话失败，conversation_id={}，error={}",
+                conversation.id, err
+            )
+        })?;
+    conversation_service().persist_conversation_with_chat_index(state, conversation)?;
     Ok(())
 }
 

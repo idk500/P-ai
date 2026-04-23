@@ -123,12 +123,7 @@ fn terminal_session_conversation(state: &AppState, session_id: &str) -> Result<O
     if let Some(conversation) = delegate_runtime_thread_conversation_get_any(state, &conversation_id)? {
         return Ok(Some(conversation));
     }
-    let data = state_read_app_data_cached(state)?;
-    Ok(data
-        .conversations
-        .iter()
-        .find(|item| item.id == conversation_id)
-        .cloned())
+    conversation_service().try_read_persisted_conversation(state, &conversation_id)
 }
 
 fn normalize_terminal_timeout_ms(timeout_ms: Option<u64>) -> u64 {
@@ -908,6 +903,13 @@ mod terminal_workspace_tests {
             app_data_persist_notify: Arc::new(tokio::sync::Notify::new()),
             app_data_persist_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             app_data_persist_latest_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            conversation_persist_pending: Arc::new(Mutex::new(None)),
+            conversation_persist_notify: Arc::new(tokio::sync::Notify::new()),
+            conversation_persist_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            conversation_persist_latest_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            cached_conversation_dirty_ids: Arc::new(Mutex::new(HashSet::new())),
+            cached_deleted_conversation_ids: Arc::new(Mutex::new(HashSet::new())),
+            cached_chat_index_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             app_data_persist_write_lock: Arc::new(Mutex::new(())),
             last_panic_snapshot: Arc::new(Mutex::new(None)),
             inflight_chat_abort_handles: Arc::new(Mutex::new(HashMap::new())),
