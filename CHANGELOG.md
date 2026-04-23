@@ -1,8 +1,6 @@
 # 变更日志
 
 ## 进行中
-
-- 优化（chat-virtual-scroll-windowing-and-snapshot-throttle）：聊天窗口虚拟滚动切回更贴近现有成熟实现的 `@tanstack/vue-virtual` 结构，去掉 active turn 自动对齐与相关高频观察器，补齐稳定 `getItemKey`、只针对当前虚拟窗口取首个可见锚点、折叠态思维链/工具卡懒渲染、代码块与布局观察器延后一帧更新，并将首次切屏与向上补历史的消息页大小都收敛到 2 条，显著降低长消息会话中的滚动抖动、连续补历史和上滚卡顿
 - 优化（chat-dynamic-scroller-migration）：聊天虚拟滚动底座切换到 `vue-virtual-scroller` 默认 `DynamicScroller / DynamicScrollerItem` 方案，移除自研虚拟列表 composable 与 TanStack 虚拟滚动依赖，统一由库接管动态高度测量、item 池化与滚动区渲染
 - 功能（provider-serial-request-gate）：供应商设置新增“允许并发请求”开关，默认关闭；后端按 `providerId` 维护全局异步串行门，默认将同一供应商下全部模型请求串行化，并把该约束下沉到真实模型调用层，覆盖主聊天、工具循环、视觉链路、tool review 与归档摘要等请求入口；配置变更仅影响后续请求，不追溯影响当前已开始的请求
 - 重构（conversation-service-boundary-and-writeback-foundation）：建立 `ConversationService` 目录化模块边界，收口会话快照、分页、单条消息、tool review、remote IM、归档与高频写路径读取语义；会话持久化补齐 write-back 基础设施与锁顺序修正，工具审查、前台轻量快照、会话分页等热路径进一步统一走服务和内存缓存，并补全文档中的 persistence worker、`write_mode`、并发冲突与异常回归清单
@@ -12,6 +10,11 @@
 - 修复（prompt-usage-source-unification-and-conversation-cache-removal）：提示词服务的上下文占用查询现在统一以最近一条 assistant 消息的 `providerMeta` 为真实真源，找不到时才回退到本地估算；同时移除 `Conversation.last_context_usage_ratio` 与 `Conversation.last_effective_prompt_tokens` 这组伪状态字段，避免前后端围绕“会话级缓存”和“消息级真实值”继续分叉，强制压缩判断、手动整理上下文预览与相关测试夹具也同步切到同一套真源语义
 - 重构（conversation-prompt-service-phase-1）：引入会话提示词服务第一阶段骨架，先收口提示词 owner 与只读 snapshot，不替换 `Conversation.messages` 作为持久化真源；系统提示词最终合成与对话消息投影入口开始统一经过服务层，并新增缓存命中稳定性与 `prompt_revision` 边界测试，确保 `todo/task` 与 `memory_recall` 不会误触发系统提示词 revision
 - 重构（conversation-prompt-service-phase-2）：继续收口提示词服务 owner，系统侧块生成统一改为由服务内部发起，并把主聊天、`SummaryContext`、工具安全审查、工具审查提交、vision 描述这几条高频真实业务入口的 latest user / prepared prompt 生成动作收进服务内部；外部主链只再传原始条件与场景意图，不再手搓系统块或 latest user 文本
+
+## 发布：v0.9.39
+
+- 优化（chat-virtual-scroll-windowing-and-snapshot-throttle）：聊天窗口虚拟滚动切回更贴近现有成熟实现的 `@tanstack/vue-virtual` 结构，去掉 active turn 自动对齐与相关高频观察器，补齐稳定 `getItemKey`、只针对当前虚拟窗口取首个可见锚点、折叠态思维链/工具卡懒渲染、代码块与布局观察器延后一帧更新，并将首次切屏与向上补历史的消息页大小都收敛到 2 条，显著降低长消息会话中的滚动抖动、连续补历史和上滚卡顿
+- 发布（release-0.9.39）：同步前端 `package.json`、Tauri `tauri.conf.json` 与 Rust `Cargo.toml` / `Cargo.lock` 版本号到 `0.9.39`，纳入本轮已完成的“聊天虚拟滚动降重、前端控制首屏快照条数与历史分页收紧”等更新
 
 ## 发布：v0.9.38
 
