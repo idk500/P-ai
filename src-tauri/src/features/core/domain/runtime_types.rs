@@ -31,6 +31,7 @@ struct ResolvedApiConfig {
     provider_api_keys: Vec<String>,
     provider_key_cursor: usize,
     request_format: RequestFormat,
+    allow_concurrent_requests: bool,
     base_url: String,
     api_key: String,
     model: String,
@@ -77,6 +78,14 @@ struct PreparedPrompt {
 struct PendingAppDataPersist {
     seq: u64,
     data: AppData,
+}
+
+#[derive(Debug, Clone)]
+struct PendingConversationPersist {
+    seq: u64,
+    conversations: std::collections::HashMap<String, Conversation>,
+    deleted_conversation_ids: std::collections::HashSet<String>,
+    chat_index: Option<ChatIndexFile>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

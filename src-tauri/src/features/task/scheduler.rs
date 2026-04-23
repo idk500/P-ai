@@ -109,10 +109,6 @@ fn task_resolve_dispatch_session(
     state: &AppState,
     task: &TaskRecordStored,
 ) -> Result<Option<TaskDispatchSessionResolved>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
     let app_config = read_config(&state.config_path)?;
     let selected_api = resolve_selected_api_config(&app_config, None)
         .ok_or_else(|| "No API config configured for task dispatch.".to_string())?;
@@ -166,7 +162,6 @@ fn task_resolve_dispatch_session(
             }
         }
     }
-    drop(guard);
     let Some(resolved) = resolved else {
         return Ok(None);
     };

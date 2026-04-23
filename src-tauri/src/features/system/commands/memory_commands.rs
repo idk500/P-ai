@@ -272,10 +272,6 @@ fn agent_memory_scope_label(agent: &AgentProfile) -> String {
 fn load_importable_agent_scope_labels(
     state: &AppState,
 ) -> Result<std::collections::HashMap<String, String>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("获取会话状态锁失败 {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let data = state_read_app_data_cached(state)?;
     let base_config = read_config(&state.config_path)?;
     let (private_agent_ids, _) =
@@ -294,7 +290,6 @@ fn load_importable_agent_scope_labels(
         }
         out.insert(agent.id.clone(), scope);
     }
-    drop(guard);
     Ok(out)
 }
 

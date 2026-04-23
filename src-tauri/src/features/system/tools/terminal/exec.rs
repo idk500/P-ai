@@ -522,16 +522,8 @@ async fn run_tool_smart_review(
     }
     let resolved_api = resolve_api_config(&app_config, Some(review_api_config_id))?;
     let language = terminal_smart_review_language(&app_config.ui_language);
-    let prepared = PreparedPrompt {
-        preamble: tool_safety_review_system_prompt(language),
-        history_messages: Vec::new(),
-        latest_user_text: build_tool_safety_review_user_prompt(tool_name, &context),
-        latest_user_meta_text: String::new(),
-        latest_user_extra_text: String::new(),
-        latest_user_extra_blocks: Vec::new(),
-        latest_images: Vec::new(),
-        latest_audios: Vec::new(),
-    };
+    let prepared = conversation_prompt_service()
+        .build_tool_safety_review_prepared_prompt(language, tool_name, &context);
     let review_execution = invoke_model_with_policy(
         &resolved_api,
         &selected_api.model,
@@ -1290,6 +1282,13 @@ mod terminal_exec_tests {
             app_data_persist_notify: Arc::new(tokio::sync::Notify::new()),
             app_data_persist_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             app_data_persist_latest_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            conversation_persist_pending: Arc::new(Mutex::new(None)),
+            conversation_persist_notify: Arc::new(tokio::sync::Notify::new()),
+            conversation_persist_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            conversation_persist_latest_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            cached_conversation_dirty_ids: Arc::new(Mutex::new(HashSet::new())),
+            cached_deleted_conversation_ids: Arc::new(Mutex::new(HashSet::new())),
+            cached_chat_index_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             app_data_persist_write_lock: Arc::new(Mutex::new(())),
             last_panic_snapshot: Arc::new(Mutex::new(None)),
             inflight_chat_abort_handles: Arc::new(Mutex::new(HashMap::new())),
@@ -1309,6 +1308,7 @@ mod terminal_exec_tests {
             delegate_recent_threads: Arc::new(Mutex::new(VecDeque::new())),
             provider_streaming_disabled_keys: Arc::new(Mutex::new(HashMap::new())),
             provider_system_message_user_fallback_keys: Arc::new(Mutex::new(HashSet::new())),
+            provider_request_gates: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             remote_im_contact_runtime_states: Arc::new(Mutex::new(HashMap::new())),
             hidden_skill_snapshot_cache: Arc::new(Mutex::new(String::new())),
             preferred_release_source: Arc::new(Mutex::new("github".to_string())),
@@ -1374,8 +1374,6 @@ mod terminal_exec_tests {
             updated_at: now_iso(),
             last_user_at: None,
             last_assistant_at: None,
-            last_context_usage_ratio: 0.0,
-            last_effective_prompt_tokens: 0,
             status: "active".to_string(),
             summary: String::new(),
             user_profile_snapshot: String::new(),

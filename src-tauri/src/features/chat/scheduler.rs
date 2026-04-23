@@ -890,9 +890,6 @@ async fn process_conversation_batch(
         .map(|event| event.created_at.trim())
         .find(|value| !value.is_empty())
         .unwrap_or("");
-    let mut persisted_batch_messages = Vec::<ChatMessage>::new();
-    let mut event_activate_flags = Vec::<bool>::with_capacity(events.len());
-
     fn defer_image_parts_for_history_flushed(
         message: &ChatMessage,
         data_path: &PathBuf,
@@ -961,11 +958,9 @@ async fn process_conversation_batch(
     // 这里统一覆盖 created_at 为 history_flush_time，
     // 目的是把“正式进入历史的时间”作为消息的业务生效时间。
     // 入队时间只用于队列观察，不用于正式会话排序和轮次判断。
-    let (scheduler_agents, summary_seed_agent, should_seed_summary_context) = {
-        let _guard = lock_conversation_with_metrics(state, "scheduler_snapshot")?;
-
-        let data = state_read_app_data_cached(state)?;
-        let Some(conversation_idx) = data
+    let scheduler_data = state_read_app_data_cached(state)?;
+    let (summary_seed_agent_id, should_seed_summary_context) = {
+        let Some(conversation_idx) = scheduler_data
             .conversations
             .iter()
             .position(|c| c.id == conversation_id && c.summary.trim().is_empty())
@@ -977,7 +972,7 @@ async fn process_conversation_batch(
             )?;
             return Err(format!("目标会话不存在，conversationId={conversation_id}"));
         };
-        let conversation = data
+        let conversation = scheduler_data
             .conversations
             .get(conversation_idx)
             .ok_or_else(|| format!("目标会话不存在，conversationId={conversation_id}"))?;
@@ -987,19 +982,26 @@ async fn process_conversation_batch(
         let should_seed_summary_context = !has_summary_context
             && !conversation_is_delegate(conversation)
             && !conversation_is_remote_im_contact(conversation);
-        let summary_seed_agent = if should_seed_summary_context
+        let summary_seed_agent_id = if should_seed_summary_context
             && conversation.user_profile_snapshot.trim().is_empty()
         {
-            data.agents
+            scheduler_data
+                .agents
                 .iter()
                 .find(|item| item.id == conversation.agent_id)
-                .cloned()
+                .map(|item| item.id.clone())
         } else {
             None
         };
-        (data.agents.clone(), summary_seed_agent, should_seed_summary_context)
+        (summary_seed_agent_id, should_seed_summary_context)
     };
-    let seeded_profile_snapshot = if let Some(agent) = summary_seed_agent.as_ref() {
+    let seeded_profile_snapshot = if let Some(agent_id) = summary_seed_agent_id.as_deref() {
+        let Some(agent) = scheduler_data.agents.iter().find(|item| item.id == agent_id) else {
+            return Err(format!(
+                "未找到用户画像种子人格，conversation_id={}, agent_id={}",
+                conversation_id, agent_id
+            ));
+        };
         match with_memory_lock(state, "scheduler_profile_snapshot", || {
             build_user_profile_snapshot_block(&state.data_path, agent, 12)
         }) {
@@ -1028,7 +1030,7 @@ async fn process_conversation_batch(
                 with_memory_lock(state, "scheduler_user_message_recall", || {
                     collect_recall_payload_for_user_message(
                         &state.data_path,
-                        &scheduler_agents,
+                        &scheduler_data.agents,
                         &event.session_info.agent_id,
                         &persisted,
                     )
@@ -1046,124 +1048,17 @@ async fn process_conversation_batch(
         }
         prepared_batches.push(prepared_messages);
     }
-    {
-        let _guard = lock_conversation_with_metrics(state, "scheduler_commit")?;
-
-        let mut data = state_read_app_data_cached(state)?;
-        let remote_im_runtime_before = serde_json::to_vec(&(
-            data.remote_im_contacts.clone(),
-            data.remote_im_contact_checkpoints.clone(),
-        ))
-        .ok();
-        if let Some(conversation_idx) = data
-            .conversations
-            .iter()
-            .position(|c| c.id == conversation_id && c.summary.trim().is_empty())
-        {
-            let last_archive_summary = data
-                .conversations
-                .iter()
-                .rev()
-                .find(|item| !conversation_is_delegate(item) && !item.summary.trim().is_empty())
-                .map(|item| item.summary.clone());
-            {
-                let conversation = &mut data.conversations[conversation_idx];
-                let has_summary_context = conversation.messages.iter().any(|message| {
-                    is_context_compaction_message(message, message.role.trim())
-                });
-                if should_seed_summary_context
-                    && !has_summary_context
-                    && !conversation_is_delegate(conversation)
-                    && !conversation_is_remote_im_contact(conversation)
-                {
-                    if conversation.user_profile_snapshot.trim().is_empty() {
-                        if let Some(snapshot) = seeded_profile_snapshot.as_deref() {
-                            conversation.user_profile_snapshot = snapshot.to_string();
-                        }
-                    }
-                    let summary_message = build_initial_summary_context_message(
-                        last_archive_summary.as_deref(),
-                        Some(conversation.user_profile_snapshot.as_str()),
-                        Some(&conversation.current_todos),
-                    );
-                    persisted_batch_messages.push(summary_message.clone());
-                    conversation.messages.insert(0, summary_message);
-                }
-            }
-            for (event, prepared_messages) in events.iter().zip(prepared_batches.iter()) {
-                let conversation = &mut data.conversations[conversation_idx];
-                for (persisted, recall_ids) in prepared_messages {
-                    if persisted.role.trim() == "user" && !recall_ids.is_empty() {
-                        for memory_id in recall_ids {
-                            conversation.memory_recall_table.push(memory_id.clone());
-                        }
-                        eprintln!(
-                            "[记忆RAG][出队消息写入] conversation_id={} user_message_id={} agent_id={} retrieved_memory_ids={:?}",
-                            conversation_id,
-                            persisted.id,
-                            event.session_info.agent_id,
-                            persisted
-                                .provider_meta
-                                .as_ref()
-                                .and_then(|meta| meta.get("retrieved_memory_ids"))
-                                .and_then(Value::as_array)
-                                .map(|items| {
-                                    items
-                                        .iter()
-                                        .filter_map(Value::as_str)
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default()
-                        );
-                    }
-                    persisted_batch_messages.push(persisted.clone());
-                    conversation.messages.push(persisted.clone());
-                    match persisted.role.trim() {
-                        "user" => conversation.last_user_at = Some(history_flush_time.clone()),
-                        "assistant" => {
-                            conversation.last_assistant_at = Some(history_flush_time.clone())
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            let mut activated_contacts_in_batch = std::collections::HashSet::<String>::new();
-            for event in &events {
-                let event_should_activate = if matches!(event.source, ChatEventSource::RemoteIm) {
-                    remote_im_handle_persisted_event_after_history_flush(
-                        state,
-                        &mut data,
-                        conversation_id,
-                        event,
-                        &history_flush_time,
-                        &mut activated_contacts_in_batch,
-                    )?
-                } else {
-                    event.activate_assistant
-                };
-                event_activate_flags.push(event_should_activate);
-            }
-            data.conversations[conversation_idx].updated_at = history_flush_time.clone();
-            let persisted_conversation = data.conversations[conversation_idx].clone();
-            let remote_im_runtime_changed = remote_im_runtime_before
-                != serde_json::to_vec(&(
-                    data.remote_im_contacts.clone(),
-                    data.remote_im_contact_checkpoints.clone(),
-                ))
-                .ok();
-            state_write_conversation_with_chat_index_cached(state, &persisted_conversation)?;
-            if remote_im_runtime_changed {
-                state_write_runtime_state_cached(state, &build_runtime_state_file(&data))?;
-            }
-        } else {
-            complete_pending_chat_events_with_error(
-                state,
-                &event_ids,
-                &format!("目标会话不存在，conversationId={conversation_id}"),
-            )?;
-            return Err(format!("目标会话不存在，conversationId={conversation_id}"));
-        }
-    }
+    let commit_result = conversation_service().commit_scheduler_history_flush(
+        state,
+        conversation_id,
+        &events,
+        &prepared_batches,
+        &history_flush_time,
+        should_seed_summary_context,
+        seeded_profile_snapshot.as_deref(),
+    )?;
+    let persisted_batch_messages = commit_result.persisted_batch_messages;
+    let event_activate_flags = commit_result.event_activate_flags;
 
     // 2. 判断是否需要激活主助理。
     // 这一步故意放在“写历史之后”，避免出现前端先开流式、

@@ -779,10 +779,6 @@ async fn export_config_migration_package(
         input.password.chars().count()
     ));
     let path = migration_save_path(&app).await?;
-    let _guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("获取会话锁失败: {err}"))?;
 
     let payload_started_at = std::time::Instant::now();
     let payload = build_export_payload(state.inner())?;
@@ -871,11 +867,6 @@ fn apply_import_config_migration_package(
         .remove(input.preview_id.trim())
         .ok_or_else(|| "迁移预检已失效，请重新选择迁移包。".to_string())?;
     let preview_dir = PathBuf::from(preview_dir);
-
-    let _guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("获取会话锁失败: {err}"))?;
 
     let (manifest, payload) = read_preview_payload(&preview_dir)?;
     assert_manifest_version(&manifest)?;

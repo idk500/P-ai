@@ -14,6 +14,8 @@
       :ui-language="config.uiLanguage"
       :locale-options="localeOptions"
       :current-theme="currentTheme"
+      :generated-theme-controls="generatedThemeControls"
+      :generated-theme-tokens="generatedThemeTokens"
       :selected-api-config="selectedApiConfig"
       :tool-api-config="toolApiConfig"
       :base-url-reference="baseUrlReference"
@@ -70,6 +72,9 @@
       @patch-conversation-api-settings="patchConversationApiSettings"
       @patch-chat-settings="patchChatSettings"
       @set-theme="setTheme"
+      @activate-generated-theme="activateGeneratedTheme"
+      @update-generated-theme-controls="updateGeneratedThemeControls"
+      @reset-generated-theme="resetGeneratedTheme"
       @refresh-models="refreshModels"
       @tool-switch-changed="onToolsChanged"
       @save-api-config="saveConfig"
@@ -141,6 +146,8 @@
         :conversation-busy="forcingArchive || compactingConversation"
         :frozen="branchingConversation || forwardingConversationSelection"
         :message-blocks="visibleMessageBlocks"
+        :has-more-history="chatHasMoreHistory"
+        :loading-older-history="chatLoadingOlderHistory"
         :latest-own-message-align-request="latestOwnMessageAlignRequest"
         :conversation-scroll-to-bottom-request="conversationScrollToBottomRequest"
         :current-workspace-name="currentChatWorkspaceName"
@@ -171,7 +178,9 @@
         @stop-recording="stopRecording"
         @send-chat="sendChat"
         @stop-chat="stopChat"
+        @load-older-history="onLoadOlderChatHistory"
         @reached-bottom="onReachedChatBottom"
+        @jump-to-conversation-bottom="onJumpToConversationBottom"
         @recall-turn="onRecallTurn"
         @regenerate-turn="onRegenerateTurn"
         @confirm-plan="confirmPlan"
@@ -185,7 +194,7 @@
         @open-supervision-task="openSupervisionTaskDialog"
         @close-supervision-task="closeSupervisionTaskDialog"
         @save-supervision-task="saveSupervisionTask"
-        @refresh-tool-review-messages="onReloadMessages"
+        @refresh-tool-review-message="onRefreshToolReviewMessage"
         @switch-conversation="onSwitchConversation"
         @rename-conversation="onRenameConversation"
         @toggle-pin-conversation="onToggleConversationPin"
@@ -320,6 +329,7 @@ import type {
   ToolLoadStatus,
   UnarchivedConversationSummary,
 } from "../../../types/app";
+import type { GeneratedThemeControls, GeneratedThemeTokens } from "../../shell/theme/theme-types";
 import {
   buildShareExportFileName,
   buildShareHtmlDocument,
@@ -350,6 +360,8 @@ const props = defineProps<{
   configTab: "hotkey" | "api" | "tools" | "mcp" | "skill" | "persona" | "department" | "chatSettings" | "remoteIm" | "memory" | "task" | "logs" | "appearance" | "about";
   localeOptions: Array<{ value: "zh-CN" | "en-US" | "zh-TW"; label: string }>;
   currentTheme: string;
+  generatedThemeControls: GeneratedThemeControls;
+  generatedThemeTokens: GeneratedThemeTokens;
   selectedApiConfig: ApiConfigItem | null;
   toolApiConfig: ApiConfigItem | null;
   baseUrlReference: string;
@@ -431,6 +443,8 @@ const props = defineProps<{
   branchingConversation: boolean;
   forwardingConversationSelection: boolean;
   visibleMessageBlocks: ChatMessageBlock[];
+  chatHasMoreHistory: boolean;
+  chatLoadingOlderHistory: boolean;
   latestOwnMessageAlignRequest: number;
   conversationScrollToBottomRequest: number;
   currentChatWorkspaceName: string;
@@ -498,6 +512,9 @@ const props = defineProps<{
   patchConversationApiSettings: (value: import("../../../types/app").ConversationApiSettingsPatch) => void;
   patchChatSettings: (value: import("../../../types/app").ChatSettingsPatch) => void;
   setTheme: (value: string) => void;
+  activateGeneratedTheme: () => void;
+  updateGeneratedThemeControls: (patch: Partial<GeneratedThemeControls>) => void;
+  resetGeneratedTheme: () => void;
   refreshModels: () => void;
   saveConfig: () => Promise<boolean> | boolean;
   restoreConfig: () => boolean;
@@ -539,7 +556,9 @@ const props = defineProps<{
   stopRecording: () => void;
   sendChat: () => void;
   stopChat: () => void;
+  onLoadOlderChatHistory: () => void;
   onReachedChatBottom: () => void;
+  onJumpToConversationBottom: () => void;
   onRecallTurn: (payload: { turnId: string }) => void;
   onRegenerateTurn: (payload: { turnId: string }) => void;
   confirmPlan: (payload: { messageId: string }) => void;
@@ -547,7 +566,7 @@ const props = defineProps<{
   openSupervisionTaskDialog: () => void;
   closeSupervisionTaskDialog: () => void;
   saveSupervisionTask: (payload: { durationHours: number; goal: string; why: string; todo: string }) => void;
-  onReloadMessages: () => void;
+  onRefreshToolReviewMessage: (payload: { conversationId: string; messageId: string }) => void;
   onSwitchConversation: (conversationId: string) => void;
   onRenameConversation: (payload: { conversationId: string; title: string }) => void;
   onToggleConversationPin: (conversationId: string) => void;

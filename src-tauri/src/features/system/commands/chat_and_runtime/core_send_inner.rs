@@ -347,25 +347,7 @@ fn remote_im_find_contact_by_conversation<'a>(
     data: &'a AppData,
     conversation_id: &str,
 ) -> Option<&'a RemoteImContact> {
-    let conversation = data.conversations.iter().find(|item| item.id == conversation_id)?;
-    let contact_conversation_key = conversation
-        .root_conversation_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    if let Some(key) = contact_conversation_key {
-        return data.remote_im_contacts.iter().find(|contact| {
-            remote_im_contact_conversation_key(contact) == key
-        });
-    }
-    data.remote_im_contacts.iter().find(|contact| {
-        contact
-            .bound_conversation_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            == Some(conversation_id)
-    })
+    conversation_service().find_remote_im_contact_by_conversation_in_data(data, conversation_id)
 }
 
 fn remote_im_contact_tool_history_events(
@@ -405,7 +387,6 @@ async fn resolve_image_description_with_vision_fallback(
 ) -> Result<Option<String>, String> {
     let hash = compute_image_hash_hex(image)?;
     let cached = {
-        let _guard = lock_conversation_with_metrics(state, "image_text_cache_read")?;
         let data = state_read_app_data_cached(state)?;
         find_image_text_cache(&data, &hash, &vision_api.id)
     };
@@ -424,7 +405,6 @@ async fn resolve_image_description_with_vision_fallback(
     }
 
     {
-        let _guard = lock_conversation_with_metrics(state, "image_text_cache_write")?;
         let mut runtime = state_read_runtime_state_cached(state)?;
         upsert_runtime_image_text_cache(&mut runtime, &hash, &vision_api.id, &trimmed);
         state_write_runtime_state_cached(state, &runtime)?;
@@ -717,10 +697,6 @@ fn update_remote_im_reply_decision_for_message(
     let assistant_message_id = assistant_message_id
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let _guard = lock_conversation_with_metrics(
-        state,
-        "update_remote_im_reply_decision_for_message",
-    )?;
 
     let update_message = |message: &mut ChatMessage| {
         let mut meta = message
@@ -753,7 +729,7 @@ fn update_remote_im_reply_decision_for_message(
         message.provider_meta = Some(meta);
     };
 
-    match state_read_conversation_cached(state, conversation_id) {
+    match conversation_service().read_persisted_conversation(state, conversation_id) {
         Ok(mut conversation) => {
             if conversation.summary.trim().is_empty() {
                 if let Some(message) = conversation.messages.iter_mut().rev().find(|message| {
@@ -763,7 +739,10 @@ fn update_remote_im_reply_decision_for_message(
                             .unwrap_or(true)
                 }) {
                     update_message(message);
-                    state_write_conversation_with_chat_index_cached(state, &conversation)?;
+                    conversation_service().persist_conversation_with_chat_index(
+                        state,
+                        &conversation,
+                    )?;
                     return Ok(());
                 }
             }
@@ -1124,8 +1103,6 @@ async fn send_chat_message_inner(
         user_intro: String,
         last_archive_summary: Option<String>,
         prompt_conversation_before: Conversation,
-        cached_effective_prompt_tokens_before_send: u64,
-        cached_usage_ratio_before_send: f64,
         is_remote_im_contact_conversation: bool,
         remote_im_contact_processing_mode: String,
         enable_pdf_images: bool,
@@ -1163,8 +1140,6 @@ async fn send_chat_message_inner(
             updated_at: String::new(),
             last_user_at: None,
             last_assistant_at: None,
-            last_context_usage_ratio: 0.0,
-            last_effective_prompt_tokens: 0,
             status: String::new(),
             summary: String::new(),
             user_profile_snapshot: String::new(),
@@ -1191,108 +1166,28 @@ async fn send_chat_message_inner(
             .find(|a| a.id == effective_agent_id)
             .cloned()
             .ok_or_else(|| "Selected agent not found.".to_string())?;
-        let requested_conversation_idx = requested_conversation_id_for_prepare.as_deref().and_then(|conversation_id| {
-            data.conversations
-                .iter()
-                .position(|item| item.id == conversation_id && item.summary.trim().is_empty())
-        });
-        let is_runtime_conversation =
-            requested_conversation_id_for_prepare.is_some()
-                && requested_conversation_idx.is_none()
-                && runtime_conversation_id_for_prepare.is_some();
-        let idx = if let Some(requested_idx) = requested_conversation_idx {
-            Some(requested_idx)
-        } else if is_runtime_conversation {
-            None
-        } else if let Some(conversation_id) = requested_conversation_id_for_prepare.as_deref() {
-            Some(
-                data.conversations
-                    .iter()
-                    .position(|item| {
-                        item.id == conversation_id && item.summary.trim().is_empty()
-                    })
-                    .ok_or_else(|| format!("指定会话不存在或不可用：{conversation_id}"))?,
-            )
-        } else {
-            Some(ensure_active_foreground_conversation_index_atomic(
-                data,
-                &state.data_path,
-                &selected_api.id,
-                effective_agent_id,
-            ))
-        };
-        if idx.is_some() {
-            for conversation in &mut data.conversations {
-                if conversation_is_delegate(conversation)
-                    || !conversation.summary.trim().is_empty()
-                {
-                    continue;
-                }
-                conversation.status = "active".to_string();
-            }
-        }
-
-        let conversation_before = if let Some(actual_idx) = idx {
-            data.conversations[actual_idx].clone()
-        } else {
-            runtime_conversation_for_prepare.clone()
-        };
-        let is_remote_im_contact_conversation =
-            conversation_is_remote_im_contact(&conversation_before);
-        let remote_im_contact_processing_mode = if is_remote_im_contact_conversation {
-            remote_im_find_contact_by_conversation(data, &conversation_before.id)
-                .map(|contact| normalize_contact_processing_mode(&contact.processing_mode))
-                .unwrap_or_else(|| "continuous".to_string())
-        } else {
-            "continuous".to_string()
-        };
-        let cached_effective_prompt_tokens_before_send =
-            conversation_before.last_effective_prompt_tokens;
-        let cached_usage_ratio_before_send =
-            if conversation_before.last_context_usage_ratio.is_finite() {
-                conversation_before.last_context_usage_ratio.max(0.0)
-            } else {
-                0.0
-            };
-        let last_archive_summary =
-            if is_runtime_conversation || conversation_is_delegate(&conversation_before) {
-                None
-            } else {
-                data.conversations
-                    .iter()
-                    .rev()
-                    .find(|c| !conversation_is_delegate(c) && !c.summary.trim().is_empty())
-                    .map(|c| c.summary.clone())
-            };
-        let prompt_conversation_before = if is_remote_im_contact_conversation
-            && remote_im_contact_processing_mode == "qa"
-        {
-            let trimmed = remote_im_trim_conversation_for_qa_mode(&conversation_before);
-            eprintln!(
-                "[远程IM] 问答模式裁剪会话上下文: conversation_id={}, original_messages={}, trimmed_messages={}",
-                conversation_before.id,
-                conversation_before.messages.len(),
-                trimmed.messages.len()
-            );
-            trimmed
-        } else {
-            conversation_before.clone()
-        };
+        let resolved = conversation_service().resolve_prompt_prepare_conversation_from_data(
+            data,
+            &state.data_path,
+            runtime_conversation_id_for_prepare.as_deref(),
+            &runtime_conversation_for_prepare,
+            selected_api,
+            effective_agent_id,
+            requested_conversation_id_for_prepare.as_deref(),
+        )?;
 
         Ok(ConversationPrepareSnapshot {
             current_agent,
             agents: runtime_agents.to_vec(),
-            response_style_id: data.response_style_id.clone(),
-            user_name: user_persona_name(data),
-            user_intro: user_persona_intro(data),
-            last_archive_summary,
-            prompt_conversation_before,
-            cached_effective_prompt_tokens_before_send,
-            cached_usage_ratio_before_send,
-            is_remote_im_contact_conversation,
-            remote_im_contact_processing_mode,
-            enable_pdf_images: data.pdf_read_mode == "image" && selected_api.enable_image,
-            is_runtime_conversation,
+            response_style_id: resolved.response_style_id,
+            user_name: resolved.user_name,
+            user_intro: resolved.user_intro,
+            last_archive_summary: resolved.last_archive_summary,
+            prompt_conversation_before: resolved.conversation_before,
+            is_remote_im_contact_conversation: resolved.is_remote_im_contact_conversation,
+            remote_im_contact_processing_mode: resolved.remote_im_contact_processing_mode,
+            enable_pdf_images: resolved.enable_pdf_images,
+            is_runtime_conversation: resolved.is_runtime_conversation,
             runtime_conversation_id: runtime_conversation_id_for_prepare.clone(),
         })
     };
@@ -1307,89 +1202,31 @@ async fn send_chat_message_inner(
             .find(|a| a.id == effective_agent_id)
             .cloned()
             .ok_or_else(|| "Selected agent not found.".to_string())?;
-        let requested_conversation_idx = requested_conversation_id_for_prepare
-            .as_deref()
-            .and_then(|conversation_id| {
-                data.conversations
-                    .iter()
-                    .position(|item| item.id == conversation_id && item.summary.trim().is_empty())
-            });
-        let is_runtime_conversation =
-            requested_conversation_id_for_prepare.is_some()
-                && requested_conversation_idx.is_none()
-                && runtime_conversation_id_for_prepare.is_some();
-        let idx = if let Some(requested_idx) = requested_conversation_idx {
-            Some(requested_idx)
-        } else if is_runtime_conversation {
-            None
-        } else if requested_conversation_id_for_prepare.is_some() {
+        let Some(resolved) =
+            conversation_service().resolve_prompt_prepare_conversation_from_data_read_only(
+                data,
+                &state.data_path,
+                runtime_conversation_id_for_prepare.as_deref(),
+                &runtime_conversation_for_prepare,
+                selected_api,
+                effective_agent_id,
+                requested_conversation_id_for_prepare.as_deref(),
+            )?
+        else {
             return Ok(None);
-        } else {
-            active_foreground_conversation_index_read_only(data, effective_agent_id)
-        };
-        let conversation_before = if let Some(actual_idx) = idx {
-            data.conversations
-                .get(actual_idx)
-                .cloned()
-                .ok_or_else(|| "前台会话索引无效".to_string())?
-        } else {
-            runtime_conversation_for_prepare.clone()
-        };
-        let is_remote_im_contact_conversation =
-            conversation_is_remote_im_contact(&conversation_before);
-        let remote_im_contact_processing_mode = if is_remote_im_contact_conversation {
-            remote_im_find_contact_by_conversation(data, &conversation_before.id)
-                .map(|contact| normalize_contact_processing_mode(&contact.processing_mode))
-                .unwrap_or_else(|| "continuous".to_string())
-        } else {
-            "continuous".to_string()
-        };
-        let cached_effective_prompt_tokens_before_send =
-            conversation_before.last_effective_prompt_tokens;
-        let cached_usage_ratio_before_send =
-            if conversation_before.last_context_usage_ratio.is_finite() {
-                conversation_before.last_context_usage_ratio.max(0.0)
-            } else {
-                0.0
-            };
-        let last_archive_summary =
-            if is_runtime_conversation || conversation_is_delegate(&conversation_before) {
-                None
-            } else {
-                data.conversations
-                    .iter()
-                    .rev()
-                    .find(|c| !conversation_is_delegate(c) && !c.summary.trim().is_empty())
-                    .map(|c| c.summary.clone())
-            };
-        let prompt_conversation_before = if is_remote_im_contact_conversation
-            && remote_im_contact_processing_mode == "qa"
-        {
-            let trimmed = remote_im_trim_conversation_for_qa_mode(&conversation_before);
-            eprintln!(
-                "[远程IM] 问答模式裁剪会话上下文: conversation_id={}, original_messages={}, trimmed_messages={}",
-                conversation_before.id,
-                conversation_before.messages.len(),
-                trimmed.messages.len()
-            );
-            trimmed
-        } else {
-            conversation_before.clone()
         };
         Ok(Some(ConversationPrepareSnapshot {
             current_agent,
             agents: runtime_agents.to_vec(),
-            response_style_id: data.response_style_id.clone(),
-            user_name: user_persona_name(data),
-            user_intro: user_persona_intro(data),
-            last_archive_summary,
-            prompt_conversation_before,
-            cached_effective_prompt_tokens_before_send,
-            cached_usage_ratio_before_send,
-            is_remote_im_contact_conversation,
-            remote_im_contact_processing_mode,
-            enable_pdf_images: data.pdf_read_mode == "image" && selected_api.enable_image,
-            is_runtime_conversation,
+            response_style_id: resolved.response_style_id,
+            user_name: resolved.user_name,
+            user_intro: resolved.user_intro,
+            last_archive_summary: resolved.last_archive_summary,
+            prompt_conversation_before: resolved.conversation_before,
+            is_remote_im_contact_conversation: resolved.is_remote_im_contact_conversation,
+            remote_im_contact_processing_mode: resolved.remote_im_contact_processing_mode,
+            enable_pdf_images: resolved.enable_pdf_images,
+            is_runtime_conversation: resolved.is_runtime_conversation,
             runtime_conversation_id: runtime_conversation_id_for_prepare.clone(),
         }))
     };
@@ -1398,10 +1235,6 @@ async fn send_chat_message_inner(
         let prepare_started = std::time::Instant::now();
         let mut prepare_detail_parts = Vec::<String>::new();
         let lock_wait_started = std::time::Instant::now();
-        let _guard = lock_conversation_with_metrics(
-            state,
-            "send_chat_message_inner_runtime_and_session_ready",
-        )?;
         let lock_wait_ms = lock_wait_started
             .elapsed()
             .as_millis()
@@ -1735,8 +1568,6 @@ async fn send_chat_message_inner(
                 for (idx, image) in images.iter().enumerate() {
                     let hash = compute_image_hash_hex(image)?;
                     let cached = {
-                        let _guard =
-                            lock_conversation_with_metrics(&state, "image_text_cache_read")?;
                         let data = state_read_app_data_cached(&state)?;
                         find_image_text_cache(&data, &hash, &vision_api.id)
                     };
@@ -1755,8 +1586,6 @@ async fn send_chat_message_inner(
                         continue;
                     }
 
-                    let _guard =
-                        lock_conversation_with_metrics(&state, "image_text_cache_write")?;
                     let mut runtime = state_read_runtime_state_cached(&state)?;
                     let mapped = if let Some(existing) =
                         find_runtime_image_text_cache(&runtime, &hash, &vision_api.id)
@@ -1879,17 +1708,19 @@ async fn send_chat_message_inner(
         })
         .collect::<Vec<_>>();
 
-    let mut archived_before_send = false;
+    let mut archived_before_send_any = false;
+    let mut compaction_restart_count = 0usize;
+    let mut persist_user_message_on_next_prepare = true;
 
     let mut preloaded_prepare_snapshot = preloaded_prepare_snapshot;
+    'dispatch: loop {
+
     let mut prepare_request_context = |persist_user_message: bool| -> Result<_, String> {
         log_run_stage("prepare_context.begin");
         let snapshot = if let Some(snapshot) = preloaded_prepare_snapshot.take() {
             log_run_stage("prepare_context.foreground_conversation_ready");
             snapshot
         } else {
-            let _guard =
-                lock_conversation_with_metrics(&state, "prepare_context_snapshot")?;
             log_run_stage("prepare_context.conversation_lock_wait_done");
             let mut data = state_read_app_data_cached(&state)?;
             log_run_stage("prepare_context.app_data_read_done");
@@ -2029,11 +1860,7 @@ async fn send_chat_message_inner(
                 updated_conversation
             } else {
                 let updated_conversation = {
-                    let _guard = lock_conversation_with_metrics(
-                        &state,
-                        "prepare_context_commit_user_message",
-                    )?;
-                    let mut conversation = state_read_conversation_cached(
+                    let mut conversation = conversation_service().read_persisted_conversation(
                         &state,
                         &updated_conversation.id,
                     )?;
@@ -2047,7 +1874,10 @@ async fn send_chat_message_inner(
                     for memory_id in &recall_payload.raw_ids {
                         conversation.memory_recall_table.push(memory_id.clone());
                     }
-                    state_write_conversation_with_chat_index_cached(&state, &conversation)?;
+                    conversation_service().persist_conversation_with_chat_index(
+                        &state,
+                        &conversation,
+                    )?;
                     conversation
                 };
                 log_run_stage("prepare_context.user_message_committed");
@@ -2069,63 +1899,30 @@ async fn send_chat_message_inner(
         let current_department = department_for_agent_id(&app_config, &snapshot.current_agent.id);
         let todo_enabled =
             tool_enabled(&selected_api, &snapshot.current_agent, current_department, "todo");
-        let mut chat_overrides = ChatPromptOverrides::default();
-        chat_overrides
-            .system_preamble_blocks
-            .push(build_hidden_skill_snapshot_block_for_department(&state, current_department));
-        log_run_stage("prepare_context.skill_snapshot_ready");
-        if let Some(workspace_agents_block) = build_workspace_agents_md_block(&conversation, &state) {
-            chat_overrides
-                .system_preamble_blocks
-                .push(workspace_agents_block);
-        }
-        log_run_stage("prepare_context.workspace_agents_ready");
-        if todo_enabled {
-            chat_overrides
-                .system_preamble_blocks
-                .push(build_todo_guide_block());
-        }
-        log_run_stage("prepare_context.todo_guide_ready");
-        if let Some(runtime_block) = build_remote_im_activation_runtime_block(
-            &remote_im_activation_sources,
-            &app_config.ui_language,
-        ) {
-            chat_overrides.system_preamble_blocks.push(runtime_block);
-        }
-        log_run_stage("prepare_context.im_runtime_ready");
-        if !trigger_only {
-            chat_overrides.latest_user_text = Some(latest_user_text.clone());
-            if !is_delegate_conversation {
-                if let Some(task_board) = build_hidden_task_board_block(&state) {
-                    chat_overrides.latest_user_extra_blocks.push(task_board);
-                }
-            }
-            log_run_stage("prepare_context.task_board_ready");
-            if todo_enabled {
-                if let Some(todo_board) = build_conversation_todo_board_block(&conversation) {
-                    chat_overrides.latest_user_extra_blocks.push(todo_board);
-                }
-            }
-            log_run_stage("prepare_context.todo_board_ready");
-            let attachment_meta = normalize_payload_attachments(input.payload.attachments.as_ref());
-            for item in attachment_meta {
-                let relative_path = item
-                    .get("relativePath")
+        let attachment_relative_paths = normalize_payload_attachments(input.payload.attachments.as_ref())
+            .into_iter()
+            .filter_map(|item| {
+                item.get("relativePath")
                     .and_then(Value::as_str)
                     .map(str::trim)
-                    .unwrap_or("");
-                if relative_path.is_empty() {
-                    continue;
-                }
-                chat_overrides.latest_user_extra_blocks.push(format!(
-                    "用户上传了附件，文件位于你工作区的 downloads 目录（路径：{}）。\n你可以先用 shell 工具定位或查看基础文件信息；具体解析方式应按文件类型选择合适 skill 或在线检索正确方法。\n仅当用户明确要求处理该附件时再处理；若用户未明确要求，请先询问用户想如何处理。",
-                    relative_path
-                ));
-            }
-            log_run_stage("prepare_context.attachment_hints_ready");
-            chat_overrides.latest_images = Some(effective_images.clone());
-            chat_overrides.latest_audios = Some(effective_audios.clone());
-        }
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<Vec<_>>();
+        let chat_overrides = ChatPromptOverrides {
+            latest_user_intent: Some(LatestUserPayloadIntent::ChatRequest {
+                trigger_only,
+                submitted_user_text: latest_user_text.clone(),
+                include_task_board: !trigger_only && !is_delegate_conversation,
+                include_todo_board: !trigger_only && todo_enabled,
+                attachment_relative_paths,
+            }),
+            todo_tool_enabled: todo_enabled,
+            remote_im_activation_sources: remote_im_activation_sources.clone(),
+            latest_images: (!trigger_only).then_some(effective_images.clone()),
+            latest_audios: (!trigger_only).then_some(effective_audios.clone()),
+            ..Default::default()
+        };
         log_run_stage("prepare_context.overrides_built");
         let prompt_mode = if is_delegate_conversation {
             PromptBuildMode::Delegate
@@ -2133,8 +1930,6 @@ async fn send_chat_message_inner(
             PromptBuildMode::Chat
         };
         let chat_overrides = Some(chat_overrides);
-        let terminal_block = terminal_prompt_trusted_roots_block(&state, &selected_api, Some(&conversation));
-        log_run_stage("prepare_context.terminal_block_ready");
         log_run_stage("prepare_context.prompt_build_begin");
         let mut prepared_prompt = build_prepared_prompt_for_mode_with_stage_logger(
             prompt_mode,
@@ -2148,7 +1943,7 @@ async fn send_chat_message_inner(
             &app_config.ui_language,
             Some(&state.data_path),
             snapshot.last_archive_summary.as_deref(),
-            terminal_block.clone(),
+            None,
             chat_overrides.clone(),
             Some(&state),
             Some(&log_run_stage),
@@ -2173,10 +1968,9 @@ async fn send_chat_message_inner(
         } else {
             Some(ToolLoopAutoCompactionContext {
                 conversation_id: conversation.id.clone(),
-                request_id: input
-                    .runtime_context
-                    .as_ref()
-                    .and_then(|value| value.request_id.as_deref())
+                request_id: runtime_context
+                    .request_id
+                    .as_deref()
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .map(ToOwned::to_owned),
@@ -2189,9 +1983,9 @@ async fn send_chat_message_inner(
                 response_style_id: snapshot.response_style_id.clone(),
                 ui_language: app_config.ui_language.clone(),
                 last_archive_summary: snapshot.last_archive_summary.clone(),
-                terminal_block,
                 chat_overrides: chat_overrides.clone(),
                 enable_pdf_images: snapshot.enable_pdf_images,
+                trusted_prompt_usage: std::sync::Arc::new(std::sync::Mutex::new(None)),
             })
         };
 
@@ -2204,20 +1998,15 @@ async fn send_chat_message_inner(
             model_name
         };
         let conversation_id = conversation.id.clone();
-        let estimated_prompt_tokens =
-            if snapshot.cached_effective_prompt_tokens_before_send > 0
-                || snapshot.cached_usage_ratio_before_send > 0.0
-            {
-                None
-            } else {
-                let estimated = estimate_prepared_prompt_tokens(
-                    &prepared_prompt,
-                    &selected_api,
-                    &snapshot.current_agent,
-                );
-                log_run_stage("prepare_context.prompt_tokens_estimated");
-                Some(estimated)
-            };
+        let usage_resolution = conversation_prompt_service().resolve_prompt_usage(
+            &prepared_prompt,
+            &selected_api,
+            &snapshot.current_agent,
+            &conversation,
+        );
+        if usage_resolution.estimated_prompt_tokens.is_some() {
+            log_run_stage("prepare_context.prompt_tokens_estimated");
+        }
         log_run_stage("prepare_context.done");
         Ok((
             model_name,
@@ -2225,9 +2014,7 @@ async fn send_chat_message_inner(
             conversation_id,
             latest_user_text,
             snapshot.current_agent,
-            estimated_prompt_tokens,
-            snapshot.cached_effective_prompt_tokens_before_send,
-            snapshot.cached_usage_ratio_before_send,
+            usage_resolution.estimated_prompt_tokens,
             snapshot.is_remote_im_contact_conversation,
             snapshot.remote_im_contact_processing_mode,
             tool_loop_auto_compaction_context,
@@ -2235,7 +2022,7 @@ async fn send_chat_message_inner(
             snapshot.is_runtime_conversation,
         ))
     };
-    let mut prepared_context = prepare_request_context(true)?;
+    let mut prepared_context = prepare_request_context(persist_user_message_on_next_prepare)?;
     if apply_prompt_image_fallbacks_to_prepared(
         &state,
         &app_config,
@@ -2245,43 +2032,51 @@ async fn send_chat_message_inner(
     .await?
         && prepared_context.5.is_some()
     {
-        prepared_context.5 = Some(estimate_prepared_prompt_tokens(
+        prepared_context.5 = Some(conversation_prompt_service().estimate_prepared_prompt_tokens(
             &prepared_context.1,
             &selected_api,
             &prepared_context.4,
         ));
     }
-    let conversation_for_compaction = prepared_context.11.clone();
+    let conversation_for_compaction = prepared_context.9.clone();
     let estimated_prompt_tokens_before_send = prepared_context.5;
-    let cached_effective_prompt_tokens_before_send = prepared_context.6;
-    let cached_usage_ratio_before_send = prepared_context.7;
-    let is_runtime_conversation = prepared_context.12;
+    let is_runtime_conversation = prepared_context.10;
     if is_runtime_conversation {
         if let Some(conversation_id) = requested_conversation_id.as_deref() {
             eprintln!(
-                "[ARCHIVE] check before user message skipped: conversation_id={}, reason=delegate_runtime_thread",
+                "[归档] 发送前检查 跳过: conversation_id={}, reason=delegate_runtime_thread",
                 conversation_id
             );
         }
     } else {
-        let (decision, decision_source) = decide_archive_before_send_with_fallback(
-            cached_effective_prompt_tokens_before_send,
-            cached_usage_ratio_before_send,
-            estimated_prompt_tokens_before_send,
-            selected_api.context_window_tokens,
+        conversation_prompt_service().prime_runtime_trusted_prompt_usage(
+            &mut runtime_context,
+            &conversation_for_compaction,
+            &selected_api,
+        );
+        let latest_real_usage = runtime_context.trusted_prompt_usage.as_ref().copied();
+        let usage_resolution = conversation_prompt_service()
+            .consume_runtime_trusted_prompt_usage_or_estimate(
+            &mut runtime_context,
+            &prepared_context.1,
+            &selected_api,
+            &prepared_context.4,
+        );
+        let (decision, decision_source) = decide_archive_before_send_from_usage(
+            &usage_resolution,
             conversation_for_compaction.last_user_at.as_deref(),
             archive_pipeline_has_assistant_reply(&conversation_for_compaction),
         );
         eprintln!(
-            "[ARCHIVE] check before user message: should_archive={}, forced={}, reason={}, usage_ratio={:.4}, source={}, cached_effective_prompt_tokens={}, cached_usage_ratio={:.4}, estimated_prompt_tokens={:?}, context_window_tokens={}",
+            "[归档] 发送前检查: should_archive={}, forced={}, reason={}, usage_ratio={:.4}, source={}, latest_real_effective_prompt_tokens={:?}, latest_real_usage_ratio={:?}, estimated_prompt_tokens={:?}, context_window_tokens={}",
             decision.should_archive,
             decision.forced,
             decision.reason,
             decision.usage_ratio,
             decision_source,
-            cached_effective_prompt_tokens_before_send,
-            cached_usage_ratio_before_send,
-            estimated_prompt_tokens_before_send,
+            latest_real_usage.map(|usage| usage.effective_prompt_tokens),
+            latest_real_usage.map(|usage| usage.context_usage_ratio),
+            usage_resolution.estimated_prompt_tokens.or(estimated_prompt_tokens_before_send),
             selected_api.context_window_tokens
         );
         if decision.should_archive {
@@ -2312,13 +2107,13 @@ async fn send_chat_message_inner(
 
             match archive_res {
                 Ok(result) => {
-                    archived_before_send = result.archived;
+                    archived_before_send_any = archived_before_send_any || result.archived;
                     if decision.forced {
                         let done_message = if result.warning.as_deref().unwrap_or("").trim().is_empty() {
-                            "整理完成，将继续当前会话。".to_string()
+                            "整理完成，正在重新开始当前调度...".to_string()
                         } else {
                             format!(
-                                "整理完成（降级摘要）：{}",
+                                "整理完成（降级摘要），正在重新开始当前调度：{}",
                                 result.warning.unwrap_or_default()
                             )
                         };
@@ -2334,22 +2129,26 @@ async fn send_chat_message_inner(
                             message: Some(done_message),
                         });
                     }
-                    prepared_context = prepare_request_context(false)?;
-                    if apply_prompt_image_fallbacks_to_prepared(
-                        &state,
-                        &app_config,
-                        &selected_api,
-                        &mut prepared_context.1,
-                    )
-                    .await?
-                        && prepared_context.5.is_some()
-                    {
-                        prepared_context.5 = Some(estimate_prepared_prompt_tokens(
-                            &prepared_context.1,
-                            &selected_api,
-                            &prepared_context.4,
-                        ));
+                    compaction_restart_count = compaction_restart_count.saturating_add(1);
+                    if compaction_restart_count > 3 {
+                        return Err("上下文整理后仍无法恢复发送，重开调度次数已超过上限。".to_string());
                     }
+                    runtime_log_info(format!(
+                        "[聊天调度] 发送前整理命中，当前调度闭口并准备重开: conversation_id={}，restart_count={}，reason={}",
+                        conversation_for_compaction.id,
+                        compaction_restart_count,
+                        decision.reason
+                    ));
+                    runtime_context.request_id = Some(format!("chat-{}", Uuid::new_v4()));
+                    runtime_context.dispatch_id = Some(Uuid::new_v4().to_string());
+                    runtime_context.event_source =
+                        runtime_context_trimmed(Some("compaction_restart"));
+                    runtime_context.dispatch_reason =
+                        runtime_context_trimmed(Some("after_auto_compaction"));
+                    runtime_context.trusted_prompt_usage = None;
+                    preloaded_prepare_snapshot = None;
+                    persist_user_message_on_next_prepare = false;
+                    continue 'dispatch;
                 }
                 Err(err) => {
                     if decision.forced {
@@ -2379,14 +2178,19 @@ async fn send_chat_message_inner(
         latest_user_text,
         current_agent,
         estimated_prompt_tokens,
-        _cached_effective_prompt_tokens_before_send,
-        _cached_usage_ratio_before_send,
         is_remote_im_contact_conversation,
         remote_im_contact_processing_mode,
         tool_loop_auto_compaction_context,
         conversation_for_request,
         is_runtime_conversation,
     ) = prepared_context;
+    if let Some(context) = tool_loop_auto_compaction_context.as_ref() {
+        let mut guard = cache_lock_recover(
+            "trusted_prompt_usage",
+            &context.trusted_prompt_usage,
+        );
+        *guard = runtime_context.trusted_prompt_usage.take();
+    }
     log_run_stage("prompt_ready");
 
     let mut model_reply: Option<ModelReply> = None;
@@ -2467,28 +2271,56 @@ async fn send_chat_message_inner(
                 &chat_session_key,
             )
             .await;
-            push_llm_round_log(
-                Some(&state),
-                Some(format!("round-{chat_session_key}")),
-                Some(chat_session_key.to_string()),
-                chat_round_execution.log_parts.scene,
-                chat_round_execution.log_parts.request_format,
-                &chat_round_execution.log_parts.provider_name,
-                &chat_round_execution.log_parts.model_name,
-                &chat_round_execution.log_parts.base_url,
-                chat_round_execution.log_parts.headers.clone(),
-                chat_round_execution.log_parts.tools.clone(),
-                chat_round_execution.log_parts.response.clone(),
-                chat_round_execution.log_parts.error.clone(),
-                chat_round_execution.log_parts.elapsed_ms,
-                chat_round_execution.log_parts.timeline.clone(),
+            let restart_after_compaction = matches!(
+                &chat_round_execution.result,
+                Err(error) if error == CHAT_DISPATCH_RESTART_AFTER_COMPACTION
             );
+            if !restart_after_compaction {
+                push_llm_round_log(
+                    Some(&state),
+                    Some(format!("round-{chat_session_key}")),
+                    Some(chat_session_key.to_string()),
+                    chat_round_execution.log_parts.scene,
+                    chat_round_execution.log_parts.request_format,
+                    &chat_round_execution.log_parts.provider_name,
+                    &chat_round_execution.log_parts.model_name,
+                    &chat_round_execution.log_parts.base_url,
+                    chat_round_execution.log_parts.headers.clone(),
+                    chat_round_execution.log_parts.tools.clone(),
+                    chat_round_execution.log_parts.response.clone(),
+                    chat_round_execution.log_parts.error.clone(),
+                    chat_round_execution.log_parts.elapsed_ms,
+                    chat_round_execution.log_parts.timeline.clone(),
+                );
+            }
             let request_finish_stage = format!(
                 "model_request.finish[candidate_api_id={},attempt={}]",
                 candidate_selected_api.id,
                 attempt + 1
             );
             log_run_stage(&request_finish_stage);
+
+            if restart_after_compaction {
+                compaction_restart_count = compaction_restart_count.saturating_add(1);
+                if compaction_restart_count > 3 {
+                    return Err("上下文整理后仍无法恢复发送，重开调度次数已超过上限。".to_string());
+                }
+                runtime_log_info(format!(
+                    "[聊天调度] 续调整理命中，当前调度闭口并准备重开: conversation_id={}，restart_count={}",
+                    conversation_id,
+                    compaction_restart_count
+                ));
+                runtime_context.request_id = Some(format!("chat-{}", Uuid::new_v4()));
+                runtime_context.dispatch_id = Some(Uuid::new_v4().to_string());
+                runtime_context.event_source =
+                    runtime_context_trimmed(Some("compaction_restart"));
+                runtime_context.dispatch_reason =
+                    runtime_context_trimmed(Some("after_tool_continue_compaction"));
+                runtime_context.trusted_prompt_usage = None;
+                preloaded_prepare_snapshot = None;
+                persist_user_message_on_next_prepare = false;
+                continue 'dispatch;
+            }
 
             let (reason_text, final_error_text) = match chat_round_execution.result {
                 Ok(reply) => {
@@ -2628,7 +2460,11 @@ async fn send_chat_message_inner(
         if trusted_input_tokens.is_some() {
             0
         } else {
-            estimate_prepared_prompt_tokens(&prepared_prompt, &active_selected_api, &current_agent)
+            conversation_prompt_service().estimate_prepared_prompt_tokens(
+                &prepared_prompt,
+                &active_selected_api,
+                &current_agent,
+            )
         }
     });
     let (effective_prompt_tokens, effective_prompt_source) =
@@ -2713,10 +2549,7 @@ async fn send_chat_message_inner(
 
     let mut persisted_assistant_message: Option<ChatMessage> = None;
     {
-        let _guard =
-            lock_conversation_with_metrics(&state, "assistant_message_commit")?;
-
-        match state_read_conversation_cached(&state, &conversation_id) {
+        match conversation_service().read_persisted_conversation(&state, &conversation_id) {
             Ok(mut conversation) => {
                 if !conversation.summary.trim().is_empty() {
                     return Err(format!("指定会话不存在或不可用：{}", conversation_id));
@@ -2745,9 +2578,10 @@ async fn send_chat_message_inner(
                     conversation.updated_at = now.clone();
                     conversation.last_assistant_at = Some(now);
                 }
-                conversation.last_effective_prompt_tokens = effective_prompt_tokens;
-                conversation.last_context_usage_ratio = context_usage_ratio;
-                state_write_conversation_with_chat_index_cached(&state, &conversation)?;
+                conversation_service().persist_conversation_with_chat_index(
+                    &state,
+                    &conversation,
+                )?;
             }
             Err(err) if !err.contains("not found") => return Err(err),
             Err(_) => {
@@ -2778,8 +2612,6 @@ async fn send_chat_message_inner(
                         conversation.updated_at = now.clone();
                         conversation.last_assistant_at = Some(now);
                     }
-                    conversation.last_effective_prompt_tokens = effective_prompt_tokens;
-                    conversation.last_context_usage_ratio = context_usage_ratio;
                     delegate_runtime_thread_conversation_update(&state, &conversation_id, conversation)?;
                 }
             }
@@ -2798,24 +2630,27 @@ async fn send_chat_message_inner(
         );
     }
 
-    Ok(SendChatResult {
-        conversation_id,
-        latest_user_text,
-        assistant_text,
-        reasoning_standard,
-        reasoning_inline,
-        archived_before_send,
-        assistant_message: persisted_assistant_message,
-        provider_prompt_tokens: trusted_input_tokens,
-        estimated_prompt_tokens: Some(estimated_prompt_tokens),
-        effective_prompt_tokens: Some(effective_prompt_tokens),
-        effective_prompt_source: Some(effective_prompt_source.to_string()),
-        context_window_tokens: Some(active_selected_api.context_window_tokens),
-        max_output_tokens: active_resolved_api.max_output_tokens,
-        context_usage_percent: Some(context_usage_percent),
-        remote_im_reply_decision: remote_im_reply_decision.as_ref().map(|item| item.action.clone()),
-        remote_im_reply_target: remote_im_reply_decision.and_then(|item| item.target),
-    })
+        break Ok(SendChatResult {
+            conversation_id,
+            latest_user_text,
+            assistant_text,
+            reasoning_standard,
+            reasoning_inline,
+            archived_before_send: archived_before_send_any,
+            assistant_message: persisted_assistant_message,
+            provider_prompt_tokens: trusted_input_tokens,
+            estimated_prompt_tokens: Some(estimated_prompt_tokens),
+            effective_prompt_tokens: Some(effective_prompt_tokens),
+            effective_prompt_source: Some(effective_prompt_source.to_string()),
+            context_window_tokens: Some(active_selected_api.context_window_tokens),
+            max_output_tokens: active_resolved_api.max_output_tokens,
+            context_usage_percent: Some(context_usage_percent),
+            remote_im_reply_decision: remote_im_reply_decision
+                .as_ref()
+                .map(|item| item.action.clone()),
+            remote_im_reply_target: remote_im_reply_decision.and_then(|item| item.target),
+        });
+    }
     };
 
     let result = futures_util::future::Abortable::new(run, abort_registration).await;
@@ -2916,6 +2751,7 @@ mod core_send_inner_tests {
             id: id.to_string(),
             name: id.to_string(),
             request_format: RequestFormat::OpenAI,
+            allow_concurrent_requests: false,
             enable_text: true,
             enable_image,
             enable_audio: false,

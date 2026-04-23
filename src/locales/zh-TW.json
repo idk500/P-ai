@@ -92,6 +92,8 @@
       "removeConfig": "删除当前API配置",
       "configName": "配置名称",
       "requestFormat": "协议",
+      "allowConcurrentRequests": "允許並發請求",
+      "allowConcurrentRequestsHint": "關閉後，該供應商下所有模型請求會串行執行。",
       "baseUrl": "基础链接",
       "linkHelper": "链接助手",
       "linkHelperHint": "选择常见供应商，自动生成对应基础链接。",
@@ -800,6 +802,7 @@
     "abstract": "抽象"
   },
   "chat": {
+    "loadingOlderMessages": "載入更早訊息中",
     "command": "指令",
     "noInstructionPresets": "暫無指令預設",
     "noMentionCandidates": "暫無可提及人格",
@@ -1141,6 +1144,37 @@
   },
   "appearance": {
     "theme": "主题",
+    "themeBuilderSummary": "保留預設主題切換，同時支援用少量參數即時合成一套穩定的自訂主題。",
+    "themeTabs": {
+      "preset": "預設",
+      "generated": "自訂"
+    },
+    "presetThemes": "預設主題",
+    "generatedTheme": "自訂生成",
+    "customThemeTitle": "目前自訂主題",
+    "customThemeSummary": "{mode}模式 · 點擊即可切換到這套主題",
+    "customThemeControls": "自訂參數",
+    "customThemeHint": "改動會即時預覽，並自動在視窗間同步。",
+    "resetGeneratedTheme": "恢復預設",
+    "mode": "明暗模式",
+    "modeOptions": {
+      "light": "淺色",
+      "dark": "深色"
+    },
+    "themeHue": "主題色相",
+    "contrast": "對比度",
+    "brightness": "亮度",
+    "tint": "透色",
+    "tone": "飽和度",
+    "radius": "統一圓角",
+    "uiSizePreset": "介面尺寸",
+    "sizePresets": {
+      "compact": "緊湊",
+      "default": "預設",
+      "comfortable": "舒展"
+    },
+    "depthEnabled": "層次效果",
+    "noiseEnabled": "紋理效果",
     "themeLight": "浅色",
     "themeDark": "深色",
     "language": "界面语言",

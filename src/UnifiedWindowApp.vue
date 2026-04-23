@@ -3,6 +3,7 @@
   <div class="window-shell text-sm bg-base-200">
     <AppWindowHeader
       :view-mode="viewMode"
+      :current-theme="currentTheme"
       :title-text="titleText"
       :chat-usage-percent="chatUsagePercent"
       :forcing-archive="forcingArchive"
@@ -52,7 +53,9 @@
       :config-tab="configTab"
       :locale-options="localeOptions"
       :current-theme="currentTheme"
-      :on-reload-messages="() => reloadForegroundConversationMessages('tool_review_refresh')"
+      :generated-theme-controls="generatedThemeControls"
+      :generated-theme-tokens="generatedThemeTokens"
+      :on-refresh-tool-review-message="refreshForegroundConversationMessageById"
       :selected-api-config="selectedApiConfig"
       :tool-api-config="toolApiConfig"
       :base-url-reference="baseUrlReference"
@@ -132,6 +135,8 @@
       :branching-conversation="branchingConversation"
       :forwarding-conversation-selection="forwardingConversationSelection"
       :visible-message-blocks="displayMessageBlocks"
+      :chat-has-more-history="hasMoreBackendHistory"
+      :chat-loading-older-history="loadingOlderConversationHistory"
       :latest-own-message-align-request="latestOwnMessageAlignRequest"
       :conversation-scroll-to-bottom-request="conversationScrollToBottomRequest"
       :current-chat-conversation-id="currentChatConversationId"
@@ -161,6 +166,7 @@
       :remote-im-contact-messages="remoteImContactMessages"
       :message-text="messageText"
       :extract-message-images="extractMessageImages"
+      :on-load-older-chat-history="loadOlderConversationHistory"
       :memory-list="memoryList"
       :memory-page="memoryPage"
       :memory-page-count="memoryPageCount"
@@ -187,6 +193,9 @@
       :patch-conversation-api-settings="patchConversationApiSettings"
       :patch-chat-settings="patchChatSettings"
       :set-theme="setTheme"
+      :activate-generated-theme="activateGeneratedTheme"
+      :update-generated-theme-controls="updateGeneratedThemeControls"
+      :reset-generated-theme="resetGeneratedTheme"
       :refresh-models="refreshModels"
       :on-tools-changed="handleToolsChanged"
       :save-config="saveConfig"
@@ -227,10 +236,11 @@
       :stop-recording="() => stopRecording(false)"
       :send-chat="chatFlow.sendChat"
       :stop-chat="chatFlow.stopChat"
+      :on-jump-to-conversation-bottom="ensureLatestForegroundTailThenScrollToBottom"
       :open-supervision-task-dialog="openSupervisionTaskDialog"
       :close-supervision-task-dialog="closeSupervisionTaskDialog"
       :save-supervision-task="saveSupervisionTask"
-      :on-reached-chat-bottom="trimForegroundMessagesToRecentLimit"
+      :on-reached-chat-bottom="() => undefined"
       :on-recall-turn="handleRecallTurn"
       :on-regenerate-turn="handleRegenerateTurn"
       :confirm-plan="handleConfirmPlan"
@@ -409,9 +419,9 @@ const props = withDefaults(defineProps<{ fixedViewMode?: "chat" | "archives" | "
 });
 
 const DRAFT_ASSISTANT_ID_PREFIX = "__draft_assistant__:";
-const FOREGROUND_RECENT_MESSAGE_LIMIT = 50;
-const FOREGROUND_MESSAGE_TRIM_THRESHOLD = 80;
-const BACKGROUND_CONVERSATION_CACHE_LIMIT = FOREGROUND_RECENT_MESSAGE_LIMIT;
+const BACKGROUND_CONVERSATION_CACHE_LIMIT = 10;
+const FOREGROUND_SNAPSHOT_RECENT_LIMIT = 2;
+const OLDER_HISTORY_PAGE_SIZE = 2;
 type BackgroundConversationBadgeState = "completed" | "failed";
 type ForegroundPaintTrace = {
   id: number;
@@ -448,7 +458,17 @@ const {
   toggleMaximizeWindow,
 } =
   useWindowShell();
-const { currentTheme, applyTheme, setTheme, restoreThemeFromStorage } = useAppTheme();
+const {
+  currentTheme,
+  generatedThemeControls,
+  generatedThemeTokens,
+  applyTheme,
+  setTheme,
+  activateGeneratedTheme,
+  updateGeneratedThemeControls,
+  resetGeneratedTheme,
+  restoreThemeFromStorage,
+} = useAppTheme();
 
 const config = reactive<AppConfig>({
   hotkey: "Alt+·",
@@ -601,6 +621,7 @@ const conversationBusy = computed(() => forcingArchive.value || compactingConver
 const branchingConversation = ref(false);
 const forwardingConversationSelection = ref(false);
 const hasMoreBackendHistory = ref(false);
+const loadingOlderConversationHistory = ref(false);
 const refreshingModels = ref(false);
 const modelRefreshError = ref("");
 const modelRefreshOkFlags = ref<Record<string, boolean>>({});
@@ -1234,8 +1255,11 @@ const CONVERSATION_COLORS = [
 const conversationScrollToBottomRequest = ref(0);
 const toolReviewRefreshTick = ref(0);
 const currentChatTodos = ref<ChatTodoItem[]>([]);
+const foregroundTailLatestReady = ref(true);
 let pendingConversationScrollToBottomConversationId = "";
 let pendingConversationScrollToBottomTimer = 0;
+let pendingManualScrollToBottomConversationId = "";
+let pendingManualScrollToBottomRequestId = "";
 
 type SwitchConversationSnapshot = {
   conversationId: string;
@@ -1264,6 +1288,11 @@ function clearPendingConversationScrollToBottomFallback() {
     window.clearTimeout(pendingConversationScrollToBottomTimer);
     pendingConversationScrollToBottomTimer = 0;
   }
+}
+
+function clearPendingManualScrollToBottom() {
+  pendingManualScrollToBottomConversationId = "";
+  pendingManualScrollToBottomRequestId = "";
 }
 
 function triggerConversationScrollToBottom(conversationId: string, reason: string) {
@@ -1566,24 +1595,6 @@ function syncUserAliasFromPersona() {
   if (userAlias.value !== next) {
     userAlias.value = next;
   }
-}
-
-function trimForegroundMessagesToRecentLimit() {
-  if (chatting.value) return;
-  if (allMessages.value.length <= FOREGROUND_MESSAGE_TRIM_THRESHOLD) return;
-  allMessages.value = allMessages.value.slice(-FOREGROUND_RECENT_MESSAGE_LIMIT);
-  hasMoreBackendHistory.value = false;
-  const currentConversationId = String(currentChatConversationId.value || "").trim();
-  if (currentConversationId) {
-    cacheConversationMessages(currentConversationId, allMessages.value);
-  }
-  console.warn("[聊天追踪][前台会话] 已裁剪到最近消息", {
-    windowLabel: tauriWindowLabel.value,
-    currentConversationId,
-    trimThreshold: FOREGROUND_MESSAGE_TRIM_THRESHOLD,
-    recentLimit: FOREGROUND_RECENT_MESSAGE_LIMIT,
-    finalMessageCount: allMessages.value.length,
-  });
 }
 
 function isLocalOwnUserMessage(message?: ChatMessage | null): boolean {
@@ -2034,6 +2045,8 @@ function clearForegroundConversation(reason: string) {
   currentChatTodos.value = [];
   allMessages.value = [];
   hasMoreBackendHistory.value = false;
+  foregroundTailLatestReady.value = true;
+  clearPendingManualScrollToBottom();
   chatFlow.freezeForegroundRoundState();
   console.warn("[聊天追踪][前台会话] 已清空", {
     windowLabel: tauriWindowLabel.value,
@@ -2276,6 +2289,34 @@ async function requestConversationMessagesAfterAsync(conversationId: string, tra
   });
 }
 
+async function requestConversationMessageById(
+  conversationId: string,
+  messageId: string,
+): Promise<ChatMessage> {
+  return invokeTauri<ChatMessage>("get_unarchived_conversation_message_by_id", {
+    input: {
+      conversationId,
+      messageId,
+    },
+  });
+}
+
+function replaceConversationMessage(messages: ChatMessage[], nextMessage: ChatMessage): ChatMessage[] {
+  const targetMessageId = String(nextMessage?.id || "").trim();
+  if (!targetMessageId || !Array.isArray(messages) || messages.length <= 0) {
+    return messages;
+  }
+  let changed = false;
+  const nextMessages = messages.map((message) => {
+    if (String(message?.id || "").trim() !== targetMessageId) {
+      return message;
+    }
+    changed = true;
+    return nextMessage;
+  });
+  return changed ? reuseStableMessageReferences(nextMessages, messages) : messages;
+}
+
 async function reloadForegroundConversationMessages(reason = "unknown") {
   const conversationId = String(currentChatConversationId.value || "").trim();
   if (!conversationId) {
@@ -2291,6 +2332,98 @@ async function reloadForegroundConversationMessages(reason = "unknown") {
       error,
     });
     await loadAllMessages();
+  }
+}
+
+async function refreshForegroundConversationMessageById(payload: { conversationId: string; messageId: string }) {
+  const conversationId = String(payload?.conversationId || "").trim();
+  const messageId = String(payload?.messageId || "").trim();
+  if (!conversationId || !messageId) return;
+  try {
+    const refreshedMessage = freezeConversationMessages([
+      await requestConversationMessageById(conversationId, messageId),
+    ])[0];
+    if (!refreshedMessage) return;
+
+    const cachedDisplay = freezeConversationMessages(conversationMessageCache.value[conversationId] || []);
+    const nextCached = replaceConversationMessage(cachedDisplay, refreshedMessage);
+    if (nextCached !== cachedDisplay) {
+      cacheConversationMessages(conversationId, nextCached);
+    }
+
+    if (String(currentChatConversationId.value || "").trim() !== conversationId) {
+      return;
+    }
+    const nextMessages = replaceConversationMessage(allMessages.value, refreshedMessage);
+    if (nextMessages === allMessages.value) {
+      return;
+    }
+    allMessages.value = nextMessages;
+    cacheConversationMessages(conversationId, nextMessages);
+  } catch (error) {
+    console.warn("[会话缓存] 单条消息刷新失败", {
+      conversationId,
+      messageId,
+      error,
+    });
+  }
+}
+
+async function loadOlderConversationHistory() {
+  const conversationId = String(currentChatConversationId.value || "").trim();
+  if (!conversationId || loadingOlderConversationHistory.value || !hasMoreBackendHistory.value) {
+    return;
+  }
+  const apiConfigId = String(currentForegroundApiConfigId.value || "").trim();
+  const agentId = String(currentForegroundAgentId.value || "").trim();
+  if (!apiConfigId || !agentId) return;
+
+  const formalMessages = formalizeConversationMessages(allMessages.value);
+  const oldestMessageId = String(formalMessages[0]?.id || "").trim();
+  if (!oldestMessageId) {
+    hasMoreBackendHistory.value = false;
+    return;
+  }
+
+  loadingOlderConversationHistory.value = true;
+  try {
+    const result = await invokeTauri<{ messages: ChatMessage[]; hasMore: boolean }>("get_active_conversation_messages_before", {
+      input: {
+        session: {
+          apiConfigId,
+          agentId,
+          conversationId,
+        },
+        beforeMessageId: oldestMessageId,
+        limit: OLDER_HISTORY_PAGE_SIZE,
+      },
+    });
+    if (
+      String(currentChatConversationId.value || "").trim() !== conversationId
+      || String(currentForegroundApiConfigId.value || "").trim() !== apiConfigId
+      || String(currentForegroundAgentId.value || "").trim() !== agentId
+    ) {
+      return;
+    }
+    const previousMessages = Array.isArray(allMessages.value) ? allMessages.value : [];
+    const incomingMessages = freezeConversationMessages(Array.isArray(result?.messages) ? result.messages : []);
+    const existingIds = new Set(previousMessages.map((item) => String(item?.id || "").trim()).filter(Boolean));
+    const uniqueIncoming = incomingMessages.filter((item) => {
+      const messageId = String(item?.id || "").trim();
+      return !!messageId && !existingIds.has(messageId);
+    });
+    const nextMessages = reuseStableMessageReferences([...uniqueIncoming, ...previousMessages], previousMessages);
+    allMessages.value = nextMessages;
+    cacheConversationMessages(conversationId, nextMessages);
+    hasMoreBackendHistory.value = !!result?.hasMore;
+  } catch (error) {
+    console.warn("[会话缓存] 向上补历史失败", {
+      conversationId,
+      error,
+    });
+    setStatusError("status.loadMessagesFailed", error);
+  } finally {
+    loadingOlderConversationHistory.value = false;
   }
 }
 
@@ -2321,13 +2454,21 @@ function mergeConversationMessagesFromSyncPayload(
 
 async function applyConversationMessagesAfterSynced(payload: ConversationMessagesAfterSyncedPayload) {
   const conversationId = String(payload?.conversationId || "").trim();
+  const requestId = String(payload?.requestId || "").trim();
   if (!conversationId) return;
   if (payload?.error) {
     console.warn("[会话缓存] 异步补消息失败", {
       conversationId,
-      requestId: payload.requestId,
+      requestId,
       error: payload.error,
     });
+    if (
+      requestId
+      && requestId === pendingManualScrollToBottomRequestId
+      && conversationId === pendingManualScrollToBottomConversationId
+    ) {
+      clearPendingManualScrollToBottom();
+    }
     return;
   }
   const nextMessages = mergeConversationMessagesFromSyncPayload(
@@ -2340,8 +2481,18 @@ async function applyConversationMessagesAfterSynced(payload: ConversationMessage
     if (!areMessagesEquivalent(allMessages.value, nextMessages)) {
       allMessages.value = nextMessages;
     }
+    foregroundTailLatestReady.value = true;
     await nextTick();
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (
+      requestId
+      && requestId === pendingManualScrollToBottomRequestId
+      && conversationId === pendingManualScrollToBottomConversationId
+    ) {
+      clearPendingManualScrollToBottom();
+      triggerConversationScrollToBottom(conversationId, "manual_after_synced");
+      return;
+    }
     if (pendingConversationScrollToBottomConversationId === conversationId) {
       triggerConversationScrollToBottom(conversationId, "after_synced");
     }
@@ -2370,9 +2521,9 @@ function applyConversationMessageAppended(payload?: ConversationMessageAppendedP
   const existing = allMessages.value.filter((item) => String(item?.id || "").trim() !== messageId);
   const stableMessage = reuseStableMessageReferences([message], allMessages.value)[0] || message;
   allMessages.value = [...existing, stableMessage];
+  foregroundTailLatestReady.value = true;
   clearConversationBadge(conversationId);
   updateForegroundConversationOverviewFromMessages(conversationId, message);
-  triggerConversationScrollToBottom(conversationId, "delegate_message_appended");
 }
 
 function applyConversationSnapshot(snapshot: SwitchConversationSnapshot) {
@@ -2399,6 +2550,7 @@ function applyConversationSnapshot(snapshot: SwitchConversationSnapshot) {
     : [];
   allMessages.value = nextMessages;
   hasMoreBackendHistory.value = !!snapshot.hasMoreHistory;
+  foregroundTailLatestReady.value = true;
   cacheConversationMessages(nextConversationId, nextMessages);
   clearConversationBadge(nextConversationId);
   if (Array.isArray(snapshot.unarchivedConversations)) {
@@ -2560,6 +2712,7 @@ async function requestConversationLightSnapshot(conversationId?: string | null):
     input: {
       conversationId: String(conversationId || "").trim() || null,
       agentId: String(currentForegroundAgentId.value || "").trim() || null,
+      limit: FOREGROUND_SNAPSHOT_RECENT_LIMIT,
     },
   });
 }
@@ -2647,9 +2800,11 @@ async function switchUnarchivedConversation(conversationId: string) {
     chatFlow.freezeForegroundRoundState();
     currentChatConversationId.value = cid;
     currentChatTodos.value = [];
+    clearPendingManualScrollToBottom();
     const cachedDisplay = freezeConversationMessages(conversationMessageCache.value[cid] || []);
     allMessages.value = cachedDisplay;
     hasMoreBackendHistory.value = inferHasMoreHistoryFromSnapshot(cachedDisplay);
+    foregroundTailLatestReady.value = false;
     maybeResumeForegroundStreamingDraft(cid, "switch_cached_display");
     clearConversationBadge(cid);
     const trace = beginForegroundPaintTrace(cid);
@@ -2664,13 +2819,48 @@ async function switchUnarchivedConversation(conversationId: string) {
     const snapshot = await requestConversationLightSnapshot(cid);
     applyConversationSnapshot(snapshot);
     await nextTick();
-    void requestConversationMessagesAfterAsync(cid, trace).catch((error) => {
-      setStatusError("status.loadMessagesFailed", error);
+    logForegroundPaintTrace(trace, "前台轻量快照已接管最新消息", {
+      conversationId: cid,
+      snapshotCount: Array.isArray(snapshot?.messages) ? snapshot.messages.length : 0,
+      hasMoreHistory: !!snapshot?.hasMoreHistory,
     });
   } catch (error) {
     setStatusError("status.loadMessagesFailed", error);
   } finally {
     conversationForegroundSyncing.value = false;
+  }
+}
+
+async function ensureLatestForegroundTailThenScrollToBottom() {
+  const conversationId = String(currentChatConversationId.value || "").trim();
+  if (!conversationId) return;
+  if (foregroundTailLatestReady.value) {
+    triggerConversationScrollToBottom(conversationId, "manual_ready");
+    return;
+  }
+  try {
+    const result = await invokeTauri<{ accepted: boolean; requestId: string }>("request_conversation_messages_after_async", {
+      input: {
+        conversationId,
+        afterMessageId: buildConversationMessagesAfterAnchor(conversationId),
+        fallbackLimit: BACKGROUND_CONVERSATION_CACHE_LIMIT,
+      },
+    });
+    if (!result?.accepted) {
+      triggerConversationScrollToBottom(conversationId, "manual_request_rejected");
+      return;
+    }
+    pendingManualScrollToBottomConversationId = conversationId;
+    pendingManualScrollToBottomRequestId = String(result.requestId || "").trim();
+    if (!pendingManualScrollToBottomRequestId) {
+      triggerConversationScrollToBottom(conversationId, "manual_request_missing_id");
+    }
+  } catch (error) {
+    console.warn("[会话切换] 手动滚到底前请求尾部增量失败", {
+      conversationId,
+      error,
+    });
+    triggerConversationScrollToBottom(conversationId, "manual_request_failed");
   }
 }
 
@@ -3608,6 +3798,7 @@ const chatFlow = useChatFlow({
 
       nextMessages = reuseStableMessageReferences(nextMessages, allMessages.value);
       allMessages.value = nextMessages;
+      foregroundTailLatestReady.value = true;
       const appendedSummary = uniqueIncoming.map((message) => {
         const meta = (message.providerMeta || {}) as Record<string, unknown>;
         const origin = meta.origin as Record<string, unknown> | undefined;

@@ -19,135 +19,119 @@
 
     <div class="flex min-h-0 min-w-0 flex-1 overflow-hidden">
       <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
-      <div
-        v-if="mediaDragActive && !chatting && !frozen && !conversationBusy"
-        class="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-base-100/70 backdrop-blur-[1px]"
-      >
-        <div class="rounded-box border border-primary/40 bg-base-100 px-4 py-2 text-sm font-medium text-primary">
-          {{ t("chat.dropImageOrPdf") }}
+        <div
+          v-if="mediaDragActive && !chatting && !frozen && !conversationBusy"
+          class="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-base-100/70 backdrop-blur-[1px]"
+        >
+          <div class="rounded-box border border-primary/40 bg-base-100 px-4 py-2 text-sm font-medium text-primary">
+            {{ t("chat.dropImageOrPdf") }}
+          </div>
         </div>
-      </div>
 
-      <div
-        ref="scrollContainer"
-        class="ecall-chat-scroll-container relative flex flex-1 min-h-0 flex-col overflow-x-hidden overflow-y-auto p-3 scrollbar-gutter-stable"
-        :data-chat-interaction-locked="chatting || frozen || conversationBusy ? 'true' : undefined"
-        @scroll="onScroll"
-      >
-        <div v-if="hasActiveOrPendingTodo" class="pointer-events-none sticky top-0 z-20 flex justify-center pt-1">
+        <div
+          ref="scrollContainer"
+          class="ecall-chat-scroll-container relative flex flex-1 min-h-0 flex-col overflow-x-hidden overflow-y-auto p-3 scrollbar-gutter-stable"
+          :class="chatting || frozen || conversationBusy ? 'pointer-events-auto' : ''"
+          :data-chat-interaction-locked="chatting || frozen || conversationBusy ? 'true' : undefined"
+          @scroll="onConversationScroll"
+        >
           <div
-            class="dropdown dropdown-bottom pointer-events-auto"
-            :aria-label="t('config.task.fields.todo')"
-            @click.stop
-            @mousedown.stop
+            v-if="loadingOlderHistory"
+            class="pointer-events-none sticky top-0 z-10 flex justify-center pb-2"
           >
-            <label
-              tabindex="0"
-              class="btn btn-sm max-w-[min(88vw,30rem)] flex-nowrap justify-start gap-2 overflow-hidden rounded-full border-base-300 bg-base-300 text-base-content hover:border-base-300 hover:bg-base-200 normal-case"
-            >
-              <ListTodo class="h-4 w-4 shrink-0 opacity-70" />
-              <span class="min-w-0 flex-1 truncate text-left">{{ activeConversationTodo }}</span>
-              <span
-                v-if="normalizedConversationTodos.length > 1"
-                class="badge badge-ghost badge-sm shrink-0"
-              >+{{ normalizedConversationTodos.length - 1 }}</span>
-            </label>
+            <div class="badge badge-ghost gap-2 border-base-300 bg-base-100/90 px-3 py-3 shadow-sm">
+              <span class="loading loading-spinner loading-xs"></span>
+              <span>{{ t("chat.loadingOlderMessages") }}</span>
+            </div>
+          </div>
+
+          <div v-if="hasActiveOrPendingTodo" class="pointer-events-none sticky top-0 z-20 flex justify-center pt-1">
             <div
-              v-if="normalizedConversationTodos.length > 1"
-              tabindex="0"
-              class="dropdown-content card card-compact mt-2 w-max max-w-[min(88vw,30rem)] border border-base-300 bg-base-100 shadow-xl"
+              class="dropdown dropdown-bottom pointer-events-auto"
+              :aria-label="t('config.task.fields.todo')"
+              @click.stop
+              @mousedown.stop
             >
-              <div class="card-body p-3">
-                <ul class="flex flex-col gap-3">
-                  <li
-                    v-for="(item, index) in normalizedConversationTodos"
-                    :key="`${item.status}-${index}-${item.content}`"
-                    class="flex items-start gap-3"
-                    :title="item.content"
-                  >
-                    <span
-                      class="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full text-sm font-semibold"
-                      :class="todoIndexClass(item.status)"
-                    >{{ index + 1 }}</span>
-                    <span
-                      class="min-w-0 wrap-break-word pt-0.5 text-sm leading-6"
-                      :class="item.status === 'completed'
-                        ? 'text-base-content/55 line-through'
-                        : item.status === 'in_progress'
-                          ? 'text-base-content font-semibold'
-                          : 'text-base-content'"
-                    >{{ item.content }}</span>
-                  </li>
-                </ul>
+              <label
+                tabindex="0"
+                class="btn btn-sm max-w-[min(88vw,30rem)] flex-nowrap justify-start gap-2 overflow-hidden rounded-full border-base-300 bg-base-300 text-base-content hover:border-base-300 hover:bg-base-200 normal-case"
+              >
+                <ListTodo class="h-4 w-4 shrink-0 opacity-70" />
+                <span class="min-w-0 flex-1 truncate text-left">{{ activeConversationTodo }}</span>
+                <span
+                  v-if="normalizedConversationTodos.length > 1"
+                  class="badge badge-ghost badge-sm shrink-0"
+                >+{{ normalizedConversationTodos.length - 1 }}</span>
+              </label>
+              <div
+                v-if="normalizedConversationTodos.length > 1"
+                tabindex="0"
+                class="dropdown-content card card-compact mt-2 w-max max-w-[min(88vw,30rem)] border border-base-300 bg-base-100 shadow-xl"
+              >
+                <div class="card-body p-3">
+                  <ul class="flex flex-col gap-3">
+                    <li
+                      v-for="(item, index) in normalizedConversationTodos"
+                      :key="`${item.status}-${index}-${item.content}`"
+                      class="flex items-start gap-3"
+                      :title="item.content"
+                    >
+                      <span
+                        class="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full text-sm font-semibold"
+                        :class="todoIndexClass(item.status)"
+                      >{{ index + 1 }}</span>
+                      <span
+                        class="min-w-0 wrap-break-word pt-0.5 text-sm leading-6"
+                        :class="item.status === 'completed'
+                          ? 'text-base-content/55 line-through'
+                          : item.status === 'in_progress'
+                            ? 'text-base-content font-semibold'
+                            : 'text-base-content'"
+                      >{{ item.content }}</span>
+                    </li>
+                  </ul>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-
-        <template v-for="item in chatRenderItems" :key="item.id">
-          <div
-            v-if="item.kind === 'compaction'"
-            class="mt-4 flex items-center gap-3 text-[11px] text-base-content/45"
-          >
-            <div class="h-px flex-1 bg-base-300/80"></div>
-            <button
-              type="button"
-              class="btn btn-ghost btn-xs shrink-0 gap-1.5 px-2 text-base-content/60 hover:text-base-content"
-              :title="t('chat.viewSummary')"
-              @click="openConversationSummary"
-            >
-              <History class="h-3.5 w-3.5" />
-              <span>{{ t("chat.viewSummary") }}</span>
-            </button>
-            <div class="h-px flex-1 bg-base-300/80"></div>
-          </div>
-          <template v-else-if="item.kind === 'message'">
-            <ChatMessageItem
-              v-memo="messageMemoKey(item.block, item.renderId, item.blockIndex)"
-              :block="item.block"
-              :selection-key="item.renderId"
-              :selection-mode-enabled="messageSelectionModeEnabled"
-              :selected="selectedMessageRenderIdSet.has(item.renderId)"
-              :chatting="chatting"
-              :busy="conversationBusy"
-              :frozen="frozen"
-              :user-alias="userAlias"
-              :user-avatar-url="userAvatarUrl"
-              :persona-name-map="personaNameMap"
-              :persona-avatar-url-map="personaAvatarUrlMap"
-              :stream-tool-calls="visibleStreamToolCalls"
-              :markdown-is-dark="markdownIsDark"
-              :playing-audio-id="playingAudioId"
-              :active-turn-user="item.renderId === activeTurnUserId"
-              :can-regenerate="canRegenerateBlock(item.block, item.blockIndex)"
-              :can-confirm-plan="canConfirmPlan(item.block)"
-              @recall-turn="$emit('recallTurn', $event)"
-              @regenerate-turn="$emit('regenerateTurn', $event)"
-              @confirm-plan="$emit('confirmPlan', $event)"
-              @enter-selection-mode="enterMessageSelectionMode"
-              @toggle-message-selected="toggleMessageSelected"
-              @copy-message="copyMessage"
-              @open-image-preview="openImagePreview"
-              @toggle-audio-playback="toggleAudioPlayback($event.id, $event.audio)"
-              @assistant-link-click="handleAssistantLinkClick"
-            />
-          </template>
-          <div
-            v-else
-            class="ecall-turn-group"
-            :data-active-turn-group="item.groupId === activeTurnGroupId ? 'true' : undefined"
-          >
+          <div class="ecall-chat-history-flow flex min-w-0 flex-col">
             <div
-              class="ecall-turn-stack"
-              :style="item.groupId === activeTurnGroupId ? { minHeight: `${activeTurnGroupMinHeight}px` } : undefined"
+              class="relative min-w-0 w-full"
+              :style="{ height: `${totalVirtualSize}px` }"
             >
-              <template v-for="groupItem in item.items" :key="groupItem.renderId">
+              <div
+                v-for="entry in virtualEntries"
+                :key="entry.item.id"
+                :data-index="entry.row.index"
+                :data-render-item-id="entry.item.id"
+                :ref="(el) => measureVirtualRow(entry.item.id, el)"
+                class="absolute left-0 top-0 w-full ecall-chat-virtual-item"
+                :style="{ transform: `translateY(${entry.row.start}px)` }"
+              >
+                <div
+                  v-if="entry.item.kind === 'compaction'"
+                  class="mt-4 flex items-center gap-3 text-[11px] text-base-content/45"
+                >
+                  <div class="h-px flex-1 bg-base-300/80"></div>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-xs shrink-0 gap-1.5 px-2 text-base-content/60 hover:text-base-content"
+                    :title="t('chat.viewSummary')"
+                    @click="openConversationSummary"
+                  >
+                    <History class="h-3.5 w-3.5" />
+                    <span>{{ t("chat.viewSummary") }}</span>
+                  </button>
+                  <div class="h-px flex-1 bg-base-300/80"></div>
+                </div>
+
                 <ChatMessageItem
-                  v-memo="messageMemoKey(groupItem.block, groupItem.renderId, groupItem.blockIndex)"
-                  :block="groupItem.block"
-                  :selection-key="groupItem.renderId"
+                  v-else-if="entry.item.kind === 'message'"
+                  v-memo="messageMemoKey(entry.item.block, entry.item.renderId, entry.item.blockIndex)"
+                  :block="entry.item.block"
+                  :selection-key="entry.item.renderId"
                   :selection-mode-enabled="messageSelectionModeEnabled"
-                  :selected="selectedMessageRenderIdSet.has(groupItem.renderId)"
+                  :selected="selectedMessageRenderIdSet.has(entry.item.renderId)"
                   :chatting="chatting"
                   :busy="conversationBusy"
                   :frozen="frozen"
@@ -158,9 +142,9 @@
                   :stream-tool-calls="visibleStreamToolCalls"
                   :markdown-is-dark="markdownIsDark"
                   :playing-audio-id="playingAudioId"
-                  :active-turn-user="groupItem.renderId === activeTurnUserId"
-                  :can-regenerate="canRegenerateBlock(groupItem.block, groupItem.blockIndex)"
-                  :can-confirm-plan="canConfirmPlan(groupItem.block)"
+                  :active-turn-user="false"
+                  :can-regenerate="canRegenerateBlock(entry.item.block, entry.item.blockIndex)"
+                  :can-confirm-plan="canConfirmPlan(entry.item.block)"
                   @recall-turn="$emit('recallTurn', $event)"
                   @regenerate-turn="$emit('regenerateTurn', $event)"
                   @confirm-plan="$emit('confirmPlan', $event)"
@@ -171,184 +155,222 @@
                   @toggle-audio-playback="toggleAudioPlayback($event.id, $event.audio)"
                   @assistant-link-click="handleAssistantLinkClick"
                 />
-              </template>
+
+                <div
+                  v-else
+                  class="ecall-turn-group"
+                >
+                  <div class="ecall-turn-stack">
+                    <template v-for="groupItem in entry.item.items" :key="groupItem.renderId">
+                      <ChatMessageItem
+                        v-memo="messageMemoKey(groupItem.block, groupItem.renderId, groupItem.blockIndex)"
+                        :block="groupItem.block"
+                        :selection-key="groupItem.renderId"
+                        :selection-mode-enabled="messageSelectionModeEnabled"
+                        :selected="selectedMessageRenderIdSet.has(groupItem.renderId)"
+                        :chatting="chatting"
+                        :busy="conversationBusy"
+                        :frozen="frozen"
+                        :user-alias="userAlias"
+                        :user-avatar-url="userAvatarUrl"
+                        :persona-name-map="personaNameMap"
+                        :persona-avatar-url-map="personaAvatarUrlMap"
+                        :stream-tool-calls="visibleStreamToolCalls"
+                        :markdown-is-dark="markdownIsDark"
+                        :playing-audio-id="playingAudioId"
+                        :active-turn-user="false"
+                        :can-regenerate="canRegenerateBlock(groupItem.block, groupItem.blockIndex)"
+                        :can-confirm-plan="canConfirmPlan(groupItem.block)"
+                        @recall-turn="$emit('recallTurn', $event)"
+                        @regenerate-turn="$emit('regenerateTurn', $event)"
+                        @confirm-plan="$emit('confirmPlan', $event)"
+                        @enter-selection-mode="enterMessageSelectionMode"
+                        @toggle-message-selected="toggleMessageSelected"
+                        @copy-message="copyMessage"
+                        @open-image-preview="openImagePreview"
+                        @toggle-audio-playback="toggleAudioPlayback($event.id, $event.audio)"
+                        @assistant-link-click="handleAssistantLinkClick"
+                      />
+                    </template>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div ref="toolbarContainer" class="pt-1 pb-2">
+              <ChatWorkspaceToolbar
+                :chatting="chatting"
+                :frozen="frozen"
+                :workspace-button-label="t('chat.allowedWorkspaceButton')"
+                :workspace-button-name="currentWorkspaceName"
+                :persona-presence-chips="personaPresenceChips"
+                :mentionable-agent-ids="mentionableAgentIds"
+                :selected-mention-agent-ids="selectedMentionAgentIds"
+                :supervision-active="supervisionActive"
+                :supervision-label="t('chat.supervision.button')"
+                :supervision-active-label="t('chat.supervision.buttonActive')"
+                :supervision-title="supervisionButtonTitle"
+                :review-button-label="toolReviewButtonLabel"
+                :review-panel-open="toolReviewPanelOpen"
+                :review-button-enabled="toolReviewButtonEnabled"
+                @lock-workspace="$emit('lockWorkspace')"
+                @mention-persona="agentId => {
+                  const normalizedAgentId = String(agentId || '').trim();
+                  if (!normalizedAgentId) return;
+                  if (selectedMentionAgentIds.includes(normalizedAgentId)) {
+                    emit('removeMention', normalizedAgentId);
+                    return;
+                  }
+                  const match = mentionOptions.find((item) => String(item.agentId || '').trim() === normalizedAgentId);
+                  if (match) emit('addMention', match);
+                }"
+                @open-supervision-task="$emit('openSupervisionTask')"
+                @toggle-tool-review="toggleToolReviewPanel"
+              />
             </div>
           </div>
-        </template>
+        </div>
+        <div
+          v-show="showJumpToBottom"
+          class="pointer-events-none absolute bottom-3 right-5 z-30 flex justify-end"
+          :style="jumpToBottomStyle"
+        >
+          <button
+            class="btn btn-sm btn-circle btn-primary pointer-events-auto shadow-lg"
+            :title="t('chat.jumpToBottom')"
+            @click="handleJumpToBottom"
+          >
+            <ChevronsDown class="h-4 w-4" />
+          </button>
+        </div>
 
-        <div ref="toolbarContainer" class="pt-1 pb-2">
-          <ChatWorkspaceToolbar
+        <div ref="composerContainer" class="relative shrink-0 border-t border-base-300 bg-base-100 p-2">
+          <div
+            v-if="chatStatusBanner"
+            class="pointer-events-none absolute inset-x-0 top-0 z-10 -translate-y-full"
+          >
+            <div
+              class="relative flex items-center justify-center rounded-box px-4 py-1.5 text-center text-[12px] backdrop-blur-md"
+              :class="chatStatusBanner.tone === 'error'
+                ? 'bg-error/12 text-error'
+                : chatStatusBanner.text === t('chat.statusCompactingContext')
+                  ? 'bg-info/12 text-info'
+                  : 'bg-base-200/75 text-base-content'"
+            >
+              <span
+                class="relative z-1"
+                :class="chatStatusBanner.tone === 'error'
+                  ? ''
+                  : 'text-base-content/80 ecall-shimmer-text ecall-reasoning-shimmer'"
+                :data-shimmer-text="chatStatusBanner.tone === 'error' ? '' : chatStatusBanner.text"
+              >{{ chatStatusBanner.text }}</span>
+            </div>
+          </div>
+          <ChatComposerPanel
+            ref="composerPanelRef"
+            :selection-mode-enabled="messageSelectionModeEnabled"
+            :selected-message-count="selectedMessageBlocks.length"
+            :chat-input="chatInput"
+            :instruction-presets="instructionPresets"
+            :mention-options="mentionOptions"
+            :selected-mentions="selectedMentions"
+            :chat-input-placeholder="chatInputPlaceholder"
+            :clipboard-images="clipboardImages"
+            :queued-attachment-notices="queuedAttachmentNotices"
+            :link-open-error-text="linkOpenErrorText"
+            :chat-error-text="chatErrorText"
+            :transcribing="transcribing"
+            :can-record="canRecord"
+            :recording="recording"
+            :recording-ms="recordingMs"
+            :record-hotkey="recordHotkey"
+            :selected-chat-model-id="selectedChatModelId"
+            :chat-model-options="chatModelOptions"
+            :plan-mode-enabled="planModeEnabled"
+            :frontend-round-phase="frontendRoundPhase"
+            :chat-usage-percent="chatUsagePercent"
+            :force-archive-tip="forceArchiveTip"
             :chatting="chatting"
+            :busy="conversationBusy"
             :frozen="frozen"
-            :workspace-button-label="t('chat.allowedWorkspaceButton')"
-            :workspace-button-name="currentWorkspaceName"
-            :persona-presence-chips="personaPresenceChips"
-            :mentionable-agent-ids="mentionableAgentIds"
-            :selected-mention-agent-ids="selectedMentionAgentIds"
-            :supervision-active="supervisionActive"
-            :supervision-label="t('chat.supervision.button')"
-            :supervision-active-label="t('chat.supervision.buttonActive')"
-            :supervision-title="supervisionButtonTitle"
-            :review-button-label="toolReviewButtonLabel"
-            :review-panel-open="toolReviewPanelOpen"
-            :review-button-enabled="toolReviewButtonEnabled"
-            @lock-workspace="$emit('lockWorkspace')"
-            @mention-persona="agentId => {
-              const normalizedAgentId = String(agentId || '').trim();
-              if (!normalizedAgentId) return;
-              if (selectedMentionAgentIds.includes(normalizedAgentId)) {
-                emit('removeMention', normalizedAgentId);
-                return;
-              }
-              const match = mentionOptions.find((item) => String(item.agentId || '').trim() === normalizedAgentId);
-              if (match) emit('addMention', match);
-            }"
-            @open-supervision-task="$emit('openSupervisionTask')"
-            @toggle-tool-review="toggleToolReviewPanel"
+            :show-side-conversation-list="showSideConversationList"
+            :active-conversation-id="activeConversationId"
+            :unarchived-conversation-items="unarchivedConversationItems"
+            :user-alias="userAlias"
+            :user-avatar-url="userAvatarUrl"
+            :persona-name-map="personaNameMap"
+            :persona-avatar-url-map="personaAvatarUrlMap"
+            :create-conversation-department-options="createConversationDepartmentOptions"
+            :default-create-conversation-department-id="defaultCreateConversationDepartmentId"
+            @update:chat-input="$emit('update:chatInput', $event)"
+            @add-mention="$emit('addMention', $event)"
+            @remove-mention="$emit('removeMention', $event)"
+            @remove-clipboard-image="$emit('removeClipboardImage', $event)"
+            @remove-queued-attachment-notice="$emit('removeQueuedAttachmentNotice', $event)"
+            @start-recording="$emit('startRecording')"
+            @stop-recording="$emit('stopRecording')"
+            @pick-attachments="$emit('pickAttachments')"
+            @update:selected-chat-model-id="$emit('update:selectedChatModelId', $event)"
+            @update:plan-mode-enabled="$emit('update:planModeEnabled', $event)"
+            @send-chat="$emit('sendChat')"
+            @stop-chat="$emit('stopChat')"
+            @exit-selection-mode="exitMessageSelectionMode"
+            @selection-action-copy="copySelectedMessages"
+            @selection-action-branch="emitSelectionAction('branch')"
+            @selection-action-forward="emitSelectionAction('forward', $event)"
+            @selection-action-share="emitSelectionAction('share')"
+            @force-archive="$emit('forceArchive')"
+            @switch-conversation="$emit('switchConversation', $event)"
+            @create-conversation="$emit('createConversation', $event)"
           />
         </div>
-      </div>
 
-      <div
-        v-show="showJumpToBottom"
-        class="pointer-events-none absolute bottom-3 right-5 z-30 flex justify-end"
-        :style="jumpToBottomStyle"
-      >
-        <button
-          class="btn btn-sm btn-circle btn-primary pointer-events-auto shadow-lg"
-          :title="t('chat.jumpToBottom')"
-          @click="jumpToBottom"
-        >
-          <ChevronsDown class="h-4 w-4" />
-        </button>
-      </div>
+        <ChatImagePreviewDialog
+          :open="imagePreviewOpen"
+          :data-url="imagePreviewDataUrl"
+          :zoom="imagePreviewZoom"
+          :min-zoom="IMAGE_PREVIEW_MIN_ZOOM"
+          :max-zoom="IMAGE_PREVIEW_MAX_ZOOM"
+          :offset-x="previewOffsetX"
+          :offset-y="previewOffsetY"
+          :dragging="previewDragging"
+          @close="closeImagePreview"
+          @zoom-in="zoomInPreview"
+          @zoom-out="zoomOutPreview"
+          @reset="resetPreviewZoom"
+          @wheel="onPreviewWheel"
+          @pointer-down="onPreviewPointerDown"
+          @pointer-move="onPreviewPointerMove"
+          @pointer-up="onPreviewPointerUp"
+        />
 
-      <div ref="composerContainer" class="relative shrink-0 border-t border-base-300 bg-base-100 p-2">
-        <div
-          v-if="chatStatusBanner"
-          class="pointer-events-none absolute inset-x-0 top-0 z-10 -translate-y-full"
-        >
-          <div
-            class="relative flex items-center justify-center rounded-box px-4 py-1.5 text-center text-[12px] backdrop-blur-md"
-            :class="chatStatusBanner.tone === 'error'
-              ? 'bg-error/12 text-error'
-              : chatStatusBanner.text === t('chat.statusCompactingContext')
-                ? 'bg-info/12 text-info'
-                : 'bg-base-200/75 text-base-content'"
-          >
-            <span
-              class="relative z-1"
-              :class="chatStatusBanner.tone === 'error'
-                ? ''
-                : 'text-base-content/80 ecall-shimmer-text ecall-reasoning-shimmer'"
-              :data-shimmer-text="chatStatusBanner.tone === 'error' ? '' : chatStatusBanner.text"
-            >{{ chatStatusBanner.text }}</span>
-          </div>
-        </div>
-        <ChatComposerPanel
-          ref="composerPanelRef"
-          :selection-mode-enabled="messageSelectionModeEnabled"
-          :selected-message-count="selectedMessageBlocks.length"
-          :chat-input="chatInput"
-          :instruction-presets="instructionPresets"
-          :mention-options="mentionOptions"
-          :selected-mentions="selectedMentions"
-          :chat-input-placeholder="chatInputPlaceholder"
-          :clipboard-images="clipboardImages"
-          :queued-attachment-notices="queuedAttachmentNotices"
-          :link-open-error-text="linkOpenErrorText"
-          :chat-error-text="chatErrorText"
-          :transcribing="transcribing"
-          :can-record="canRecord"
-          :recording="recording"
-          :recording-ms="recordingMs"
-          :record-hotkey="recordHotkey"
-          :selected-chat-model-id="selectedChatModelId"
-          :chat-model-options="chatModelOptions"
-          :plan-mode-enabled="planModeEnabled"
-          :frontend-round-phase="frontendRoundPhase"
-          :chat-usage-percent="chatUsagePercent"
-          :force-archive-tip="forceArchiveTip"
-          :chatting="chatting"
-          :busy="conversationBusy"
-          :frozen="frozen"
-          :show-side-conversation-list="showSideConversationList"
-          :active-conversation-id="activeConversationId"
-          :unarchived-conversation-items="unarchivedConversationItems"
-          :user-alias="userAlias"
-          :user-avatar-url="userAvatarUrl"
-          :persona-name-map="personaNameMap"
-          :persona-avatar-url-map="personaAvatarUrlMap"
-          :create-conversation-department-options="createConversationDepartmentOptions"
-          :default-create-conversation-department-id="defaultCreateConversationDepartmentId"
-          @update:chat-input="$emit('update:chatInput', $event)"
-          @add-mention="$emit('addMention', $event)"
-          @remove-mention="$emit('removeMention', $event)"
-          @remove-clipboard-image="$emit('removeClipboardImage', $event)"
-          @remove-queued-attachment-notice="$emit('removeQueuedAttachmentNotice', $event)"
-          @start-recording="$emit('startRecording')"
-          @stop-recording="$emit('stopRecording')"
-          @pick-attachments="$emit('pickAttachments')"
-          @update:selected-chat-model-id="$emit('update:selectedChatModelId', $event)"
-          @update:plan-mode-enabled="$emit('update:planModeEnabled', $event)"
-          @send-chat="$emit('sendChat')"
-          @stop-chat="$emit('stopChat')"
-          @exit-selection-mode="exitMessageSelectionMode"
-          @selection-action-copy="copySelectedMessages"
-          @selection-action-branch="emitSelectionAction('branch')"
-          @selection-action-forward="emitSelectionAction('forward', $event)"
-          @selection-action-share="emitSelectionAction('share')"
-          @force-archive="$emit('forceArchive')"
-          @switch-conversation="$emit('switchConversation', $event)"
-          @create-conversation="$emit('createConversation', $event)"
+        <ChatSupervisionTaskDialog
+          :open="supervisionDialogOpen"
+          :saving="supervisionTaskSaving"
+          :error-text="supervisionTaskError"
+          :active-task="activeSupervisionTask"
+          :recent-history="recentSupervisionTaskHistory"
+          @close="$emit('closeSupervisionTask')"
+          @save="$emit('saveSupervisionTask', $event)"
         />
       </div>
 
-      <ChatImagePreviewDialog
-        :open="imagePreviewOpen"
-        :data-url="imagePreviewDataUrl"
-        :zoom="imagePreviewZoom"
-        :min-zoom="IMAGE_PREVIEW_MIN_ZOOM"
-        :max-zoom="IMAGE_PREVIEW_MAX_ZOOM"
-        :offset-x="previewOffsetX"
-        :offset-y="previewOffsetY"
-        :dragging="previewDragging"
-        @close="closeImagePreview"
-        @zoom-in="zoomInPreview"
-        @zoom-out="zoomOutPreview"
-        @reset="resetPreviewZoom"
-        @wheel="onPreviewWheel"
-        @pointer-down="onPreviewPointerDown"
-        @pointer-move="onPreviewPointerMove"
-        @pointer-up="onPreviewPointerUp"
-      />
-
-      <ChatSupervisionTaskDialog
-        :open="supervisionDialogOpen"
-        :saving="supervisionTaskSaving"
-        :error-text="supervisionTaskError"
-        :active-task="activeSupervisionTask"
-        :recent-history="recentSupervisionTaskHistory"
-        @close="$emit('closeSupervisionTask')"
-        @save="$emit('saveSupervisionTask', $event)"
-      />
-      </div>
-        <ToolReviewSidebar
-          v-if="toolReviewPanelOpen"
-          class="w-104 max-w-[42vw] shrink-0 border-l border-base-300 bg-base-100 pt-2"
-          :batches="toolReviewBatches"
-          :current-batch-key="toolReviewCurrentBatchKey"
+      <ToolReviewSidebar
+        v-if="toolReviewPanelOpen"
+        class="w-104 max-w-[42vw] shrink-0 border-l border-base-300 bg-base-100 pt-2"
+        :batches="toolReviewBatches"
+        :current-batch-key="toolReviewCurrentBatchKey"
         :detail-map="toolReviewDetailMap"
         :detail-loading-call-id="toolReviewDetailLoadingCallId"
-          :reviewing-call-id="toolReviewReviewingCallId"
-          :batch-reviewing-key="toolReviewBatchReviewingKey"
-          :submitting-batch-key="toolReviewSubmittingBatchKey"
-          :error-text="toolReviewErrorText"
-          :report-error-text="toolReviewReportErrorText"
-          :markdown-is-dark="markdownIsDark"
-          @select-batch="setToolReviewCurrentBatchKey"
-          @load-item-detail="loadToolReviewItemDetail"
-          @review-item="runToolReviewForCall"
+        :reviewing-call-id="toolReviewReviewingCallId"
+        :batch-reviewing-key="toolReviewBatchReviewingKey"
+        :submitting-batch-key="toolReviewSubmittingBatchKey"
+        :error-text="toolReviewErrorText"
+        :report-error-text="toolReviewReportErrorText"
+        :markdown-is-dark="markdownIsDark"
+        @select-batch="setToolReviewCurrentBatchKey"
+        @load-item-detail="loadToolReviewItemDetail"
+        @review-item="runToolReviewForCall"
         @review-batch="runToolReviewForBatch"
         @submit-batch="submitToolReviewBatch"
       />
@@ -357,7 +379,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, toRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, toRef, watch, type ComponentPublicInstance } from "vue";
+import { useVirtualizer } from "@tanstack/vue-virtual";
 import { useI18n } from "vue-i18n";
 import { isDarkAppTheme } from "../../shell/composables/use-app-theme";
 import { ChevronsDown, History, ListTodo } from "lucide-vue-next";
@@ -381,6 +404,8 @@ type ChatRenderItem =
   | { kind: "compaction"; id: string; renderId: string; block: ChatMessageBlock; blockIndex: number }
   | { kind: "message"; id: string; renderId: string; block: ChatMessageBlock; blockIndex: number }
   | { kind: "group"; id: string; groupId: string; items: Array<{ renderId: string; block: ChatMessageBlock; blockIndex: number }> };
+
+const MAX_GROUP_ITEM_COUNT = 2;
 
 const props = defineProps<{
   userAlias: string;
@@ -425,6 +450,8 @@ const props = defineProps<{
   conversationBusy: boolean;
   frozen: boolean;
   messageBlocks: ChatMessageBlock[];
+  hasMoreHistory: boolean;
+  loadingOlderHistory: boolean;
   latestOwnMessageAlignRequest: number;
   conversationScrollToBottomRequest: number;
   currentWorkspaceName: string;
@@ -456,6 +483,9 @@ const props = defineProps<{
 }>();
 
 const markdownIsDark = computed(() => isDarkAppTheme(props.currentTheme));
+const ephemeralBlockRenderIdMap = new WeakMap<ChatMessageBlock, string>();
+let ephemeralBlockRenderIdSeq = 0;
+
 function isOrganizeContextToolCall(call: { name: string; argsText: string; status?: "doing" | "done" }): boolean {
   const name = String(call.name || "").trim().toLowerCase();
   if (name === "organize_context" || name === "archive") return true;
@@ -566,7 +596,7 @@ const chatRenderItems = computed<ChatRenderItem[]>(() => {
   };
 
   props.messageBlocks.forEach((block, blockIndex) => {
-    const renderId = blockRenderId(block, blockIndex);
+    const renderId = blockRenderId(block);
     if (isCompactionBlock(block)) {
       flushGroup();
       items.push({ kind: "compaction", id: `compaction-${renderId}`, renderId, block, blockIndex });
@@ -574,7 +604,7 @@ const chatRenderItems = computed<ChatRenderItem[]>(() => {
     }
     if (isRightAlignedMessage(block)) {
       flushGroup();
-      const groupId = blockGroupRenderId(block, blockIndex);
+      const groupId = blockGroupRenderId(block);
       currentGroup = {
         kind: "group",
         id: `group-${groupId}`,
@@ -584,6 +614,11 @@ const chatRenderItems = computed<ChatRenderItem[]>(() => {
       return;
     }
     if (currentGroup) {
+      if (currentGroup.items.length >= MAX_GROUP_ITEM_COUNT) {
+        flushGroup();
+        items.push({ kind: "message", id: `message-${renderId}`, renderId, block, blockIndex });
+        return;
+      }
       currentGroup.items.push({ renderId, block, blockIndex });
       return;
     }
@@ -591,22 +626,6 @@ const chatRenderItems = computed<ChatRenderItem[]>(() => {
   });
   flushGroup();
   return items;
-});
-const activeTurnGroupId = computed(() => {
-  for (let idx = chatRenderItems.value.length - 1; idx >= 0; idx -= 1) {
-    const item = chatRenderItems.value[idx];
-    if (item.kind !== "group") continue;
-    return item.groupId;
-  }
-  return "";
-});
-const activeTurnUserId = computed(() => {
-  for (let idx = chatRenderItems.value.length - 1; idx >= 0; idx -= 1) {
-    const item = chatRenderItems.value[idx];
-    if (item.kind !== "group") continue;
-    return String(item.items[0]?.renderId || "").trim();
-  }
-  return "";
 });
 const mentionableAgentIds = computed(() =>
   props.mentionOptions
@@ -663,8 +682,10 @@ const emit = defineEmits<{
   (e: "togglePinConversation", conversationId: string): void;
   (e: "createConversation", input?: { title?: string; departmentId?: string }): void;
   (e: "openConversationSummary", conversationId: string): void;
+  (e: "loadOlderHistory"): void;
   (e: "reachedBottom"): void;
-  (e: "refreshToolReviewMessages"): void;
+  (e: "jumpToConversationBottom"): void;
+  (e: "refreshToolReviewMessage", payload: { conversationId: string; messageId: string }): void;
   (e: "selectionActionCopy", payload: { count: number; messageIds: string[]; blocks: ChatMessageBlock[] }): void;
   (e: "selectionActionCopyError", payload: { count: number; messageIds: string[]; blocks: ChatMessageBlock[]; error: string }): void;
   (e: "selectionActionBranch", payload: { count: number; messageIds: string[]; blocks: ChatMessageBlock[] }): void;
@@ -677,38 +698,197 @@ const linkOpenErrorText = ref("");
 const composerPanelRef = ref<{ focusInput: (options?: FocusOptions) => void } | null>(null);
 const messageSelectionModeEnabled = ref(false);
 const selectedMessageRenderIds = ref<string[]>([]);
+const pendingOlderHistoryRestore = ref<null | {
+  anchorItemId: string;
+  anchorTop: number | null;
+  scrollHeight: number;
+  scrollTop: number;
+  messageCount: number;
+}>(null);
+const olderHistoryRequestPending = ref(false);
+const LOAD_OLDER_HISTORY_THRESHOLD_PX = 96;
+const LOAD_OLDER_HISTORY_REARM_THRESHOLD_PX = 180;
+const observedVirtualItemElements = new Map<string, HTMLElement>();
+let pendingMeasureFrame = 0;
+let pendingPinToBottomFrame = 0;
+let lastConversationScrollTop = 0;
+const olderHistoryTriggerArmed = ref(true);
 
 const {
   scrollContainer,
   composerContainer,
   toolbarContainer,
   chatLayoutRoot,
-  activeTurnGroupMinHeight,
   showJumpToBottom,
   jumpToBottomStyle,
   showSideConversationList,
   onScroll,
-  jumpToBottom,
 } = useChatScrollLayout({
   activeConversationId: toRef(props, "activeConversationId"),
   chatting: toRef(props, "chatting"),
   busy: toRef(props, "conversationBusy"),
   frozen: toRef(props, "frozen"),
   messageBlockCount: computed(() => props.messageBlocks.length),
-  lastMessageIsOwn: computed(() => {
-    const lastBlock = props.messageBlocks[props.messageBlocks.length - 1];
-    return lastBlock ? isRightAlignedMessage(lastBlock) : false;
-  }),
-  latestOwnMessageAlignRequest: toRef(props, "latestOwnMessageAlignRequest"),
   conversationScrollToBottomRequest: toRef(props, "conversationScrollToBottomRequest"),
   onReachedBottom: () => emit("reachedBottom"),
   focusComposerInput: (options) => composerPanelRef.value?.focusInput(options),
 });
 
+function refreshObservedVirtualItemElements() {
+  const validIds = new Set(chatRenderItems.value.map((item) => item.id));
+  for (const [itemId] of observedVirtualItemElements.entries()) {
+    if (!validIds.has(itemId)) observedVirtualItemElements.delete(itemId);
+  }
+}
+
+const virtualizer = useVirtualizer(
+  computed(() => ({
+    count: chatRenderItems.value.length,
+    getScrollElement: () => scrollContainer.value,
+    getItemKey: (index: number) => chatRenderItems.value[index]?.id ?? `row-${index}`,
+    estimateSize: (index: number) => estimateChatRenderItemHeight(chatRenderItems.value[index]),
+    overscan: 4,
+  })),
+);
+
+const virtualRows = computed(() => virtualizer.value.getVirtualItems());
+const virtualEntries = computed(() => {
+  return virtualRows.value
+    .map((row) => {
+      const item = chatRenderItems.value[row.index];
+      return item ? { row, item } : null;
+    })
+    .filter((entry): entry is { row: typeof virtualRows.value[number]; item: ChatRenderItem } => Boolean(entry));
+});
+const totalVirtualSize = computed(() => virtualizer.value.getTotalSize());
+
+function scheduleVirtualMeasure() {
+  if (pendingMeasureFrame) return;
+  void nextTick(() => {
+    if (pendingMeasureFrame) return;
+    pendingMeasureFrame = requestAnimationFrame(() => {
+      pendingMeasureFrame = 0;
+      refreshObservedVirtualItemElements();
+      virtualizer.value.measure();
+    });
+  });
+}
+
+function measureVirtualRow(itemId: string, element: Element | ComponentPublicInstance | null) {
+  const normalizedItemId = String(itemId || "").trim();
+  if (!element) {
+    if (normalizedItemId) observedVirtualItemElements.delete(normalizedItemId);
+    return;
+  }
+  const target = element instanceof Element ? element : ((element.$el as Element | undefined) ?? null);
+  if (!target) {
+    if (normalizedItemId) observedVirtualItemElements.delete(normalizedItemId);
+    return;
+  }
+  virtualizer.value.measureElement(target);
+  const resolvedItemId = normalizedItemId || String(target.getAttribute("data-render-item-id") || "").trim();
+  if (resolvedItemId && target instanceof HTMLElement) {
+    observedVirtualItemElements.set(resolvedItemId, target);
+  }
+}
+
+function pinToBottomOnNextLayout(smooth = false) {
+  if (pendingPinToBottomFrame) {
+    cancelAnimationFrame(pendingPinToBottomFrame);
+    pendingPinToBottomFrame = 0;
+  }
+  void nextTick(() => {
+    scheduleVirtualMeasure();
+    pendingPinToBottomFrame = requestAnimationFrame(() => {
+      pendingPinToBottomFrame = 0;
+      const scrollEl = scrollContainer.value;
+      if (!scrollEl) return;
+      requestAnimationFrame(() => {
+        scrollEl.scrollTo({
+          top: scrollEl.scrollHeight,
+          behavior: smooth ? "smooth" : "auto",
+        });
+        onScroll();
+      });
+    });
+  });
+}
+
+function syncViewportMetrics() {
+  scheduleVirtualMeasure();
+}
+
+function getItemViewportTop(itemId: string): number | null {
+  const element = observedVirtualItemElements.get(itemId);
+  const scrollEl = scrollContainer.value;
+  if (!element || !scrollEl) return null;
+  return element.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
+}
+
+function getFirstVisibleItemId(): string {
+  const scrollEl = scrollContainer.value;
+  if (!scrollEl) return "";
+  const containerTop = scrollEl.getBoundingClientRect().top;
+  let candidateId = "";
+  let candidateTop = Number.POSITIVE_INFINITY;
+  for (const entry of virtualEntries.value) {
+    const itemId = entry.item.id;
+    const element = observedVirtualItemElements.get(itemId);
+    if (!element || !element.isConnected) continue;
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom <= containerTop + 1) continue;
+    if (rect.top < candidateTop) {
+      candidateTop = rect.top;
+      candidateId = itemId;
+    }
+  }
+  return candidateId;
+}
+
+function onConversationScroll() {
+  const scrollEl = scrollContainer.value;
+  if (scrollEl) {
+    if (scrollEl.scrollTop > LOAD_OLDER_HISTORY_REARM_THRESHOLD_PX) {
+      olderHistoryTriggerArmed.value = true;
+    }
+  }
+  onScroll();
+  maybeRequestOlderHistory();
+  if (scrollEl) {
+    lastConversationScrollTop = scrollEl.scrollTop;
+  }
+}
+
+function handleJumpToBottom() {
+  emit("jumpToConversationBottom");
+}
+
+function maybeRequestOlderHistory() {
+  const scrollEl = scrollContainer.value;
+  if (!scrollEl) return;
+  if (!props.hasMoreHistory || props.loadingOlderHistory || olderHistoryRequestPending.value) return;
+  if (!olderHistoryTriggerArmed.value) return;
+  if (scrollEl.scrollTop > LOAD_OLDER_HISTORY_THRESHOLD_PX) return;
+  const isMovingUpward = scrollEl.scrollTop <= lastConversationScrollTop;
+  if (!isMovingUpward) return;
+  const anchorItemId = getFirstVisibleItemId();
+  pendingOlderHistoryRestore.value = {
+    anchorItemId,
+    anchorTop: anchorItemId ? getItemViewportTop(anchorItemId) : null,
+    scrollHeight: scrollEl.scrollHeight,
+    scrollTop: scrollEl.scrollTop,
+    messageCount: props.messageBlocks.length,
+  };
+  olderHistoryRequestPending.value = true;
+  olderHistoryTriggerArmed.value = false;
+  emit("loadOlderHistory");
+}
+
 watch(
   showSideConversationList,
   (value) => {
     emit("sideConversationListVisibleChange", value);
+    syncViewportMetrics();
   },
   { immediate: true },
 );
@@ -720,6 +900,63 @@ watch(
   () => String(props.activeConversationId || "").trim(),
   () => {
     exitMessageSelectionMode();
+    pinToBottomOnNextLayout(false);
+    pendingOlderHistoryRestore.value = null;
+    olderHistoryRequestPending.value = false;
+    olderHistoryTriggerArmed.value = true;
+    lastConversationScrollTop = 0;
+  },
+  { immediate: true },
+);
+
+watch(
+  () => props.conversationScrollToBottomRequest,
+  (nextValue, prevValue) => {
+    if (!nextValue || nextValue === prevValue) return;
+    pinToBottomOnNextLayout(false);
+  },
+);
+
+watch(
+  () => props.messageBlocks.length,
+  () => {
+    refreshObservedVirtualItemElements();
+    syncViewportMetrics();
+  },
+);
+
+watch(
+  () => props.loadingOlderHistory,
+  async (loading, wasLoading) => {
+    if (loading) return;
+    if (!wasLoading) return;
+    olderHistoryRequestPending.value = false;
+    const restore = pendingOlderHistoryRestore.value;
+    pendingOlderHistoryRestore.value = null;
+    if (!restore) return;
+    const scrollEl = scrollContainer.value;
+    if (!scrollEl) return;
+    await nextTick();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (restore.anchorItemId) {
+      const nextAnchorTop = getItemViewportTop(restore.anchorItemId);
+      if (nextAnchorTop !== null && restore.anchorTop !== null) {
+        scrollEl.scrollTop += nextAnchorTop - restore.anchorTop;
+        lastConversationScrollTop = scrollEl.scrollTop;
+        if (scrollEl.scrollTop > LOAD_OLDER_HISTORY_REARM_THRESHOLD_PX) {
+          olderHistoryTriggerArmed.value = true;
+        }
+        syncViewportMetrics();
+        return;
+      }
+    }
+    const deltaHeight = scrollEl.scrollHeight - restore.scrollHeight;
+    scrollEl.scrollTop = Math.max(0, restore.scrollTop + deltaHeight);
+    lastConversationScrollTop = scrollEl.scrollTop;
+    if (scrollEl.scrollTop > LOAD_OLDER_HISTORY_REARM_THRESHOLD_PX) {
+      olderHistoryTriggerArmed.value = true;
+    }
+    syncViewportMetrics();
   },
 );
 const {
@@ -802,7 +1039,7 @@ const {
   messageBlocks: computed(() => props.messageBlocks),
   refreshTick: toRef(props, "toolReviewRefreshTick"),
   t,
-  onRefreshMessages: () => emit("refreshToolReviewMessages"),
+  onRefreshMessage: (payload) => emit("refreshToolReviewMessage", payload),
 });
 
 function isOwnMessage(block: ChatMessageBlock): boolean {
@@ -816,23 +1053,51 @@ function isRightAlignedMessage(block: ChatMessageBlock): boolean {
   return id === "user-persona";
 }
 
-function blockRenderId(block: ChatMessageBlock, blockIndex: number): string {
-  const rawId = String(block.id || "").trim();
-  return rawId || `block-${blockIndex}`;
+function getEphemeralBlockRenderId(block: ChatMessageBlock): string {
+  const cached = ephemeralBlockRenderIdMap.get(block);
+  if (cached) return cached;
+  ephemeralBlockRenderIdSeq += 1;
+  const nextId = `block-ephemeral-${ephemeralBlockRenderIdSeq}`;
+  ephemeralBlockRenderIdMap.set(block, nextId);
+  return nextId;
 }
 
-function blockGroupRenderId(block: ChatMessageBlock, blockIndex: number): string {
+function blockRenderId(block: ChatMessageBlock): string {
+  const rawId = String(block.id || "").trim();
+  if (rawId) return rawId;
+  const sourceMessageId = String(block.sourceMessageId || "").trim();
+  if (sourceMessageId) {
+    return block.isExtraTextBlock ? `${sourceMessageId}::extra` : sourceMessageId;
+  }
+  const createdAt = String(block.createdAt || "").trim();
+  const speakerAgentId = String(block.speakerAgentId || "").trim();
+  const role = String(block.role || "").trim();
+  const textPreview = String(block.text || "").trim().slice(0, 64);
+  if (createdAt || speakerAgentId || role || textPreview) {
+    return [
+      "block-stable",
+      role || "no-role",
+      speakerAgentId || "no-speaker",
+      createdAt || "no-time",
+      block.isExtraTextBlock ? "extra" : "base",
+      textPreview || "no-text",
+    ].join(":");
+  }
+  return getEphemeralBlockRenderId(block);
+}
+
+function blockGroupRenderId(block: ChatMessageBlock) {
   const createdAt = String(block.createdAt || "").trim();
   const textPreview = String(block.text || "").trim().slice(0, 48);
+  const renderId = blockRenderId(block);
   if (createdAt || textPreview) {
-    return `${createdAt || "no-time"}:${textPreview || "no-text"}`;
+    return `${renderId}:${createdAt || "no-time"}:${textPreview || "no-text"}`;
   }
-  return `slot-${blockIndex}`;
+  return `group-${renderId}`;
 }
 
 function messageMemoKey(block: ChatMessageBlock, renderId: string, blockIndex: number) {
   const selected = selectedMessageRenderIdSet.value.has(renderId);
-  const activeTurnUser = renderId === activeTurnUserId.value;
   const canRegenerate = canRegenerateBlock(block, blockIndex);
   const canConfirm = canConfirmPlan(block);
   const requiresInteractionState = canRegenerate || canConfirm;
@@ -847,13 +1112,82 @@ function messageMemoKey(block: ChatMessageBlock, renderId: string, blockIndex: n
     props.conversationBusy,
     messageSelectionModeEnabled.value,
     selected,
-    activeTurnUser,
     canRegenerate,
     canConfirm,
     requiresInteractionState ? props.chatting : false,
     requiresInteractionState ? props.conversationBusy : false,
     requiresInteractionState ? props.frozen : false,
   ];
+}
+
+function estimateChatRenderItemHeight(item: ChatRenderItem): number {
+  if (item.kind === "compaction") return 44;
+  if (item.kind === "message") {
+    return estimateMessageBlockHeight(item.block) + 8;
+  }
+  return item.items.reduce((total, groupItem) => total + estimateMessageBlockHeight(groupItem.block) + 8, 0) + 8;
+}
+
+function blockSizeDependencies(block: ChatMessageBlock): unknown[] {
+  return [
+    String(block.id || ""),
+    String(block.sourceMessageId || ""),
+    String(block.text || ""),
+    String(block.reasoningInline || ""),
+    String(block.reasoningStandard || ""),
+    block.images.length,
+    block.audios.length,
+    block.attachmentFiles.length,
+    block.toolCalls.length,
+    Array.isArray(block.memeSegments) ? block.memeSegments.length : 0,
+    block.planCard?.action || "",
+    String(block.taskTrigger ? JSON.stringify(block.taskTrigger) : ""),
+  ];
+}
+
+function virtualItemSizeDependencies(item: ChatRenderItem): unknown[] {
+  if (item.kind === "compaction") {
+    return [item.id, item.kind];
+  }
+  if (item.kind === "message") {
+    return [item.id, ...blockSizeDependencies(item.block)];
+  }
+  return [
+    item.id,
+    ...item.items.flatMap((groupItem) => [groupItem.renderId, ...blockSizeDependencies(groupItem.block)]),
+  ];
+}
+
+function estimateMessageBlockHeight(block: ChatMessageBlock): number {
+  let estimate = isOwnMessage(block) ? 78 : 108;
+  const text = String(block.text || "");
+  const inlineReasoning = String(block.reasoningInline || "");
+  const standardReasoning = String(block.reasoningStandard || "");
+  const combinedTextLength = text.length + inlineReasoning.length + standardReasoning.length;
+  estimate += Math.min(920, Math.ceil(combinedTextLength / 28) * 9);
+
+  const codeFenceCount = countFenceMatches(text, /```[\w-]*\s*[\r\n]/g);
+  const mermaidFenceCount = countFenceMatches(text, /```(?:\s*)mermaid\b/gi);
+  estimate += codeFenceCount * 180;
+  estimate += mermaidFenceCount * 120;
+
+  if (block.planCard) estimate += 84;
+  if (block.taskTrigger) estimate += 120;
+  if (standardReasoning.trim()) estimate += Math.min(240, Math.ceil(standardReasoning.length / 36) * 12);
+  if (inlineReasoning.trim()) estimate += Math.min(180, Math.ceil(inlineReasoning.length / 36) * 10);
+  if (block.toolCalls.length > 0) estimate += block.toolCalls.length * 56 + 36;
+  if (Array.isArray(block.memeSegments) && block.memeSegments.length > 0) {
+    estimate += block.memeSegments.length * 42;
+  }
+  estimate += block.images.length * 120;
+  estimate += block.audios.length * 42;
+  estimate += block.attachmentFiles.length * 34;
+  return Math.max(64, estimate);
+}
+
+function countFenceMatches(text: string, pattern: RegExp): number {
+  if (!text) return 0;
+  return Array.from(text.matchAll(pattern)).length;
 }
 
 function isCompactionBlock(block: ChatMessageBlock): boolean {
@@ -1056,6 +1390,15 @@ async function handleAssistantLinkClick(event: MouseEvent) {
 }
 
 onBeforeUnmount(() => {
+  if (pendingMeasureFrame) {
+    cancelAnimationFrame(pendingMeasureFrame);
+    pendingMeasureFrame = 0;
+  }
+  if (pendingPinToBottomFrame) {
+    cancelAnimationFrame(pendingPinToBottomFrame);
+    pendingPinToBottomFrame = 0;
+  }
+  observedVirtualItemElements.clear();
   stopAudioPlayback();
 });
 
@@ -1094,6 +1437,22 @@ onBeforeUnmount(() => {
 .ecall-turn-group {
   display: block;
   width: 100%;
+}
+
+.ecall-chat-virtual-list {
+  width: 100%;
+  min-width: 0;
+}
+
+.ecall-chat-virtual-item {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.ecall-chat-virtual-spacer {
+  width: 100%;
+  flex: 0 0 auto;
 }
 
 .ecall-turn-stack {

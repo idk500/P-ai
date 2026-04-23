@@ -90,9 +90,9 @@ struct ToolLoopAutoCompactionContext {
     response_style_id: String,
     ui_language: String,
     last_archive_summary: Option<String>,
-    terminal_block: Option<String>,
     chat_overrides: Option<ChatPromptOverrides>,
     enable_pdf_images: bool,
+    trusted_prompt_usage: std::sync::Arc<std::sync::Mutex<Option<TrustedPromptUsage>>>,
 }
 
 fn tool_loop_transient_tool_history_message(events: &[Value]) -> Option<ChatMessage> {
@@ -154,18 +154,7 @@ fn tool_loop_active_conversation_snapshot(
     state: &AppState,
     conversation_id: &str,
 ) -> Result<Option<Conversation>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
-    let data = state_read_app_data_cached(state)?;
-    let conversation = data
-        .conversations
-        .iter()
-        .find(|item| item.id == conversation_id && item.summary.trim().is_empty())
-        .cloned();
-    drop(guard);
-    Ok(conversation)
+    conversation_service().try_read_unarchived_conversation(state, conversation_id)
 }
 
 fn build_tool_loop_prepared_for_continuation(
@@ -192,7 +181,7 @@ fn build_tool_loop_prepared_for_continuation(
         &context.ui_language,
         Some(&state.data_path),
         context.last_archive_summary.as_deref(),
-        context.terminal_block.clone(),
+        None,
         context.chat_overrides.clone(),
         Some(state),
         Some(selected_api),
@@ -583,9 +572,6 @@ async fn maybe_apply_auto_compaction_before_tool_continue_genai(
     resolved_api: &ResolvedApiConfig,
     on_delta: &tauri::ipc::Channel<AssistantDeltaEvent>,
     transient_tool_history: &[Value],
-    protocol_family: ToolCallProtocolFamily,
-    system_prompt: &mut Option<String>,
-    messages: &mut Vec<genai::chat::ChatMessage>,
 ) -> Result<bool, String> {
     let Some(state) = state else {
         return Ok(false);
@@ -612,14 +598,21 @@ async fn maybe_apply_auto_compaction_before_tool_continue_genai(
         return Ok(false);
     };
 
-    let estimated_prompt_tokens =
-        estimate_prepared_prompt_tokens(&prepared_before, selected_api, &context.agent);
-    let context_window = u64::from(selected_api.context_window_tokens.max(1));
-    let usage_ratio = estimated_prompt_tokens as f64 / context_window as f64;
-    if usage_ratio < 0.82 {
+    let usage = conversation_prompt_service().consume_shared_trusted_prompt_usage_or_estimate(
+        &context.trusted_prompt_usage,
+        &prepared_before,
+        selected_api,
+        &context.agent,
+    );
+    let (decision, decision_source) = decide_archive_before_send_from_usage(
+        &usage,
+        source.last_user_at.as_deref(),
+        archive_pipeline_has_assistant_reply(&source),
+    );
+    if !decision.should_archive {
         runtime_log_info(format!(
-            "[聊天] 工具续调前上下文整理检查 跳过 conversation_id={} usage_ratio={:.4}",
-            context.conversation_id, usage_ratio
+            "[聊天] 工具续调前上下文整理检查 跳过 conversation_id={} usage_ratio={:.4} source={} reason={}",
+            context.conversation_id, decision.usage_ratio, decision_source, decision.reason
         ));
         return Ok(false);
     }
@@ -642,7 +635,7 @@ async fn maybe_apply_auto_compaction_before_tool_continue_genai(
         resolved_api,
         &source,
         &context.agent.id,
-        "force_context_usage_82_before_tool_continue",
+        &decision.reason,
         "COMPACTION-BEFORE-TOOL-CONTINUE",
     )
     .await;
@@ -677,27 +670,30 @@ async fn maybe_apply_auto_compaction_before_tool_continue_genai(
         ));
     } else {
         runtime_log_info(format!(
-            "[聊天] 工具续调前上下文整理 完成 conversation_id={} usage_ratio_before={:.4} estimated_prompt_tokens={}",
-            context.conversation_id, usage_ratio, estimated_prompt_tokens
+            "[聊天] 工具续调前上下文整理 完成 conversation_id={} usage_ratio_before={:.4} source={} reason={} forced={} effective_prompt_tokens={} estimated_prompt_tokens={}",
+            context.conversation_id,
+            usage.usage_ratio,
+            decision_source,
+            decision.reason,
+            decision.forced,
+            usage.effective_prompt_tokens,
+            usage.estimated_prompt_tokens.unwrap_or(0)
         ));
     }
 
-    let Some((_compacted_source, prepared_after)) = build_tool_loop_prepared_for_continuation(
-        state,
-        context,
-        selected_api,
-        resolved_api,
-        transient_tool_history,
-    )?
-    else {
-        return Err("自动整理完成后未找到当前会话，无法继续工具续调。".to_string());
-    };
+    let _ = on_delta.send(AssistantDeltaEvent {
+        delta: String::new(),
+        kind: Some("tool_status".to_string()),
+        request_id: None,
+        phase_id: None,
+        reason: None,
+        tool_name: Some("archive".to_string()),
+        tool_status: Some("done".to_string()),
+        tool_args: None,
+        message: Some("整理完成，正在重新开始当前调度...".to_string()),
+    });
 
-    let (next_system_prompt, next_messages) =
-        build_genai_message_state(&prepared_after, protocol_family)?;
-    *system_prompt = next_system_prompt;
-    *messages = next_messages;
-    Ok(true)
+    Err(CHAT_DISPATCH_RESTART_AFTER_COMPACTION.to_string())
 }
 
 async fn run_genai_tool_loop(
@@ -717,6 +713,12 @@ async fn run_genai_tool_loop(
     chat_session_key: &str,
 ) -> Result<ModelReply, String> {
     let api_config = resolve_request_api_config(api_config).await?;
+    let _provider_serial_guard = maybe_acquire_provider_serial_guard(
+        tool_abort_state,
+        &api_config,
+        model_name,
+    )
+    .await?;
     let request_api_key = consume_api_key_for_request(&api_config);
     let client = genai::Client::builder().build();
     let service_target = genai::ServiceTarget {
@@ -748,7 +750,7 @@ async fn run_genai_tool_loop(
     let mut full_reasoning_standard = String::new();
     let mut tool_history_events = Vec::<Value>::new();
     let mut trusted_input_tokens: Option<u64> = None;
-    let (mut system_prompt, mut messages) = build_genai_message_state(&prepared, protocol_family)?;
+    let (system_prompt, mut messages) = build_genai_message_state(&prepared, protocol_family)?;
 
     let mut auto_compaction_applied = false;
     let mut tool_repeat_guard = ToolRepeatGuard::default();
@@ -762,9 +764,6 @@ async fn run_genai_tool_loop(
                 resolved_api,
                 on_delta,
                 &tool_history_events,
-                protocol_family,
-                &mut system_prompt,
-                &mut messages,
             )
             .await?;
         }
@@ -868,6 +867,14 @@ async fn run_genai_tool_loop(
                 }
                 Err(err) => return Err(format!("GenAI 流式处理失败：{err}")),
             }
+        }
+
+        if let Some(context) = auto_compaction_context {
+            conversation_prompt_service().refresh_shared_trusted_prompt_usage(
+                &context.trusted_prompt_usage,
+                trusted_input_tokens,
+                selected_api,
+            );
         }
 
         if !turn_text.is_empty() {
@@ -1225,6 +1232,12 @@ async fn run_genai_tool_loop_non_stream(
     chat_session_key: &str,
 ) -> Result<ModelReply, String> {
     let api_config = resolve_request_api_config(api_config).await?;
+    let _provider_serial_guard = maybe_acquire_provider_serial_guard(
+        tool_abort_state,
+        &api_config,
+        model_name,
+    )
+    .await?;
     let request_api_key = consume_api_key_for_request(&api_config);
     let client = genai::Client::builder().build();
     let service_target = genai::ServiceTarget {
@@ -1256,7 +1269,7 @@ async fn run_genai_tool_loop_non_stream(
     let mut full_reasoning_standard = String::new();
     let mut tool_history_events = Vec::<Value>::new();
     let mut trusted_input_tokens: Option<u64> = None;
-    let (mut system_prompt, mut messages) = build_genai_message_state(&prepared, protocol_family)?;
+    let (system_prompt, mut messages) = build_genai_message_state(&prepared, protocol_family)?;
 
     let mut auto_compaction_applied = false;
     let mut tool_repeat_guard = ToolRepeatGuard::default();
@@ -1269,9 +1282,6 @@ async fn run_genai_tool_loop_non_stream(
                 resolved_api,
                 on_delta,
                 &tool_history_events,
-                protocol_family,
-                &mut system_prompt,
-                &mut messages,
             )
             .await?;
         }

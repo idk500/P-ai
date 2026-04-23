@@ -15,68 +15,20 @@ fn delegate_resolve_context(
     ),
     String,
 > {
-    let guard = app_state
-        .conversation_lock
-        .lock()
-        .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
-    let mut config = read_config(&app_state.config_path)?;
-    let mut data = read_app_data(&app_state.data_path)?;
-    merge_private_organization_into_runtime_data(&app_state.data_path, &mut config, &mut data)?;
-    let source_department = department_for_agent_id(&config, source_agent_id)
-        .cloned()
-        .ok_or_else(|| format!("未找到发起部门，agentId={source_agent_id}"))?;
-    let target_department = department_by_id(&config, target_department_id)
-        .cloned()
-        .ok_or_else(|| format!("目标部门不存在，departmentId={target_department_id}"))?;
-    let target_agent_id = target_department
-        .agent_ids
-        .iter()
-        .find(|id| !id.trim().is_empty())
-        .cloned()
-        .ok_or_else(|| format!("目标部门没有可用委任人，departmentId={target_department_id}"))?;
-    if target_agent_id.trim() == source_agent_id.trim() {
-        drop(guard);
-        return Err("该部门主管就是你自己，自己解决。".to_string());
-    }
-    if !data
-        .agents
-        .iter()
-        .any(|agent| agent.id == target_agent_id && !agent.is_built_in_user)
-    {
-        drop(guard);
-        return Err(format!("目标委任人不存在，agentId={target_agent_id}"));
-    }
-    let thread_context = if let Some(conversation_id) = source_conversation_id {
-        delegate_runtime_thread_get(app_state, conversation_id)?
-    } else {
-        None
-    };
-    let source_conversation_id = if let Some(thread) = thread_context.as_ref() {
-        thread.root_conversation_id.clone()
-    } else {
-        let requested_conversation_id = source_conversation_id
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "主代理缺少当前会话 ID，无法发起委托".to_string())?;
-        data.conversations
-            .iter()
-            .find(|item| {
-                item.id == requested_conversation_id
-                    && item.summary.trim().is_empty()
-                    && !conversation_is_delegate(item)
-            })
-            .map(|item| item.id.clone())
-            .ok_or_else(|| format!("未找到指定主会话，conversationId={requested_conversation_id}"))?
-    };
-    drop(guard);
-    Ok((
-        config,
-        data,
-        source_department,
-        target_department,
-        target_agent_id,
+    let resolved = conversation_service().resolve_delegate_context(
+        app_state,
+        source_agent_id,
         source_conversation_id,
-        thread_context,
+        target_department_id,
+    )?;
+    Ok((
+        resolved.config,
+        resolved.data,
+        resolved.source_department,
+        resolved.target_department,
+        resolved.target_agent_id,
+        resolved.source_conversation_id,
+        resolved.thread_context,
     ))
 }
 

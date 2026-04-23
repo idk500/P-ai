@@ -26,8 +26,6 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 use uuid::Uuid;
 
-const TOKIO_WORKER_STACK_SIZE_BYTES: usize = 8 * 1024 * 1024;
-
 macro_rules! eprintln {
     ($($arg:tt)*) => {{
         runtime_log_info(format!($($arg)*));
@@ -46,6 +44,8 @@ include!("features/config/app_data_layout.rs");
 include!("features/chat/message_semantics.rs");
 include!("features/chat/conversation.rs");
 include!("features/chat/prompt_manager.rs");
+include!("features/chat/conversation_prompt_service.rs");
+include!("features/chat/conversation_service/mod.rs");
 include!("features/chat/model_runtime.rs");
 include!("features/chat/scheduler.rs");
 include!("features/remote_im/onebot_v11_ws.rs");
@@ -90,7 +90,6 @@ fn should_enable_devtools() -> bool {
 fn install_tauri_async_runtime() -> Result<tokio::runtime::Runtime, String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .thread_stack_size(TOKIO_WORKER_STACK_SIZE_BYTES)
         .build()
         .map_err(|err| format!("创建 Tauri 异步运行时失败: {err}"))?;
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -341,6 +340,9 @@ fn main() {
             if let Err(err) = start_app_data_persist_worker(app_handle.state::<AppState>().inner()) {
                 eprintln!("[启动] 启动后台持久化服务失败: {err}");
             }
+            if let Err(err) = start_conversation_persist_worker(app_handle.state::<AppState>().inner()) {
+                eprintln!("[启动] 启动会话后台持久化服务失败: {err}");
+            }
             if let Err(err) = start_record_hotkey_probe(
                 app_handle.clone(),
                 app_handle.state::<AppState>().config_path.clone(),
@@ -544,6 +546,7 @@ fn main() {
             mark_conversation_read,
             get_unarchived_conversation_messages,
             get_unarchived_conversation_recent_messages,
+            get_unarchived_conversation_message_by_id,
             list_delegate_conversations,
             get_delegate_conversation_messages,
             delete_unarchived_conversation,
@@ -612,6 +615,7 @@ fn main() {
             preview_import_config_migration_package,
             apply_import_config_migration_package,
             codex_get_auth_status,
+            codex_get_rate_limits,
             codex_start_oauth_login,
             codex_logout,
             check_tools_status,

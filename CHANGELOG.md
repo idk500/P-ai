@@ -1,5 +1,41 @@
 # 变更日志
 
+## 进行中
+- 优化（chat-dynamic-scroller-migration）：聊天虚拟滚动底座切换到 `vue-virtual-scroller` 默认 `DynamicScroller / DynamicScrollerItem` 方案，移除自研虚拟列表 composable 与 TanStack 虚拟滚动依赖，统一由库接管动态高度测量、item 池化与滚动区渲染
+- 功能（provider-serial-request-gate）：供应商设置新增“允许并发请求”开关，默认关闭；后端按 `providerId` 维护全局异步串行门，默认将同一供应商下全部模型请求串行化，并把该约束下沉到真实模型调用层，覆盖主聊天、工具循环、视觉链路、tool review 与归档摘要等请求入口；配置变更仅影响后续请求，不追溯影响当前已开始的请求
+- 重构（conversation-service-boundary-and-writeback-foundation）：建立 `ConversationService` 目录化模块边界，收口会话快照、分页、单条消息、tool review、remote IM、归档与高频写路径读取语义；会话持久化补齐 write-back 基础设施与锁顺序修正，工具审查、前台轻量快照、会话分页等热路径进一步统一走服务和内存缓存，并补全文档中的 persistence worker、`write_mode`、并发冲突与异常回归清单
+- 优化（chat-foreground-windowing-and-review-refresh）：聊天前台切换改为直接从底部最新窗口进入，首屏轻量快照收敛为最近 10 条、向上滚动分页每次补 10 条，并引入动态高度虚拟滚动以降低超长会话渲染卡顿；同时收紧会话/工具审查读取热路径，优先走内存缓存快照，工具审查改为按 messageId 精确刷新单条消息，避免把 review 误当成“补后续消息”
+- 功能（codex-rate-limits-and-spark-buckets）：Codex 供应商登录状态卡新增官方 usage 快照查询，复用现有 OAuth/本地凭证链路请求 `/wham/usage`，展示主 Codex 与 GPT-5.3-Codex-Spark 两组 `5h/weekly` 额度、重置时间与 credits 状态，并兼容当前默认 `https://chatgpt.com/backend-api/codex` 基址的 usage 查询归一化
+- 重构（compaction-close-and-restart-dispatch）：上下文压缩现在被明确建模为调度边界事件；无论是发送前自动整理还是工具续调前整理，一旦命中压缩，当前调度都会闭口结束，并在压缩完成后以新的 `request_id / dispatch_id` 重开一次调度，不再在同一次调度里跨过压缩消息继续原地续跑；同时统一首发与续调两条链的压缩判定入口，确保真相层、展示层与抽象调度层都一致表现为“消息组 -> 压缩消息 -> 新消息组”
+- 修复（prompt-usage-source-unification-and-conversation-cache-removal）：提示词服务的上下文占用查询现在统一以最近一条 assistant 消息的 `providerMeta` 为真实真源，找不到时才回退到本地估算；同时移除 `Conversation.last_context_usage_ratio` 与 `Conversation.last_effective_prompt_tokens` 这组伪状态字段，避免前后端围绕“会话级缓存”和“消息级真实值”继续分叉，强制压缩判断、手动整理上下文预览与相关测试夹具也同步切到同一套真源语义
+- 重构（conversation-prompt-service-phase-1）：引入会话提示词服务第一阶段骨架，先收口提示词 owner 与只读 snapshot，不替换 `Conversation.messages` 作为持久化真源；系统提示词最终合成与对话消息投影入口开始统一经过服务层，并新增缓存命中稳定性与 `prompt_revision` 边界测试，确保 `todo/task` 与 `memory_recall` 不会误触发系统提示词 revision
+- 重构（conversation-prompt-service-phase-2）：继续收口提示词服务 owner，系统侧块生成统一改为由服务内部发起，并把主聊天、`SummaryContext`、工具安全审查、工具审查提交、vision 描述这几条高频真实业务入口的 latest user / prepared prompt 生成动作收进服务内部；外部主链只再传原始条件与场景意图，不再手搓系统块或 latest user 文本
+
+## 发布：v0.9.39
+
+- 优化（chat-virtual-scroll-windowing-and-snapshot-throttle）：聊天窗口虚拟滚动切回更贴近现有成熟实现的 `@tanstack/vue-virtual` 结构，去掉 active turn 自动对齐与相关高频观察器，补齐稳定 `getItemKey`、只针对当前虚拟窗口取首个可见锚点、折叠态思维链/工具卡懒渲染、代码块与布局观察器延后一帧更新，并将首次切屏与向上补历史的消息页大小都收敛到 2 条，显著降低长消息会话中的滚动抖动、连续补历史和上滚卡顿
+- 发布（release-0.9.39）：同步前端 `package.json`、Tauri `tauri.conf.json` 与 Rust `Cargo.toml` / `Cargo.lock` 版本号到 `0.9.39`，纳入本轮已完成的“聊天虚拟滚动降重、前端控制首屏快照条数与历史分页收紧”等更新
+
+## 发布：v0.9.38
+
+- 优化（chat-dynamic-scroller-migration）：聊天虚拟滚动底座切换到 `vue-virtual-scroller` 默认 `DynamicScroller / DynamicScrollerItem` 方案，移除自研虚拟列表 composable 与 TanStack 虚拟滚动依赖，统一由库接管动态高度测量、item 池化与滚动区渲染；同时将会话切换与“滚到底”锚定收口到 scroller 自身暴露的方法，修正 `ChatView` 模板层级，避免 `0.9.37` 中出现的长会话滚动异常
+- 发布（release-0.9.38）：同步前端 `package.json`、Tauri `tauri.conf.json` 与 Rust `Cargo.toml` / `Cargo.lock` 版本号到 `0.9.38`，纳入本轮已完成的“聊天虚拟滚动底座迁移、滚动恢复可用与布局层级修正”等更新
+
+## 发布：v0.9.37
+
+- 优化（chat-virtual-list-scroll-stability-and-render-keys）：聊天虚拟滚动收口为稳定 item key 渲染，去掉基于渲染区间的整段 subtree 重建；无 id 消息补稳定前端 renderId，向上滚动时仅对完全位于视口上方的高度修正做滚动补偿，并为加载更早历史补充锚点恢复，减少长会话中的闪烁、跳动与滚动抢夺
+- 发布（release-0.9.37）：同步前端 `package.json`、Tauri `tauri.conf.json` 与 Rust `Cargo.toml` / `Cargo.lock` 版本号到 `0.9.37`，纳入本轮已完成的“聊天虚拟滚动稳定性收口、稳定 render key 与历史锚点恢复”等更新
+
+## 发布：v0.9.36
+
+- 修复（chat-send-ingress-and-dispatch-stack-overflow）：发送链路从收到前端 `send_chat_message` 到调度结束这段，去掉了目标会话解析阶段的前置快速持久化与整份 `Conversation/agents` 按值返回；发送入口与用户@委托发送改为先完成 ingress 再触发后台调度，mention 计划直接基于当前 `AppData` 借用构造，不再额外背整份会话快照；调度层同步移除 `agents.clone()` 与 flush 后整会话 `clone()`，降低发送前准备与调度边界上的主线程/运行态栈压力，修复 release 新会话首发即闪退的问题
+- 发布（release-0.9.36）：同步前端 `package.json`、Tauri `tauri.conf.json` 与 Rust `Cargo.toml` / `Cargo.lock` 版本号到 `0.9.36`，纳入本轮已完成的“发送前准备链与调度链爆栈修复、release 诊断收口与版本发布”更新
+
+## 发布：v0.9.35
+
+- 功能（parameterized-theme-generator-and-mode-presets）：主题系统新增“预设 / 自定义”双入口，支持以少量参数即时合成并预览自定义主题；自定义浅色与自定义深色各自独立缓存参数，切换明暗不会互相覆盖，并恢复与预设主题并存的切换能力；同时聊天消息、工具审查、标题栏与外观页样式联动改为跟随新的主题 token，补齐中英繁文案、运行时动态注入与相关前端测试
+- 发布（release-0.9.35）：同步前端 `package.json`、Tauri `tauri.conf.json` 与 Rust `Cargo.toml` / `Cargo.lock` 版本号到 `0.9.35`，纳入本轮已完成的“参数化主题生成、自定义主题明暗双缓存、主题页预设/自定义切换与样式收口”等更新
+
 ## 发布：v0.9.30
 
 - 优化（chat-selection-branch-action-copywriting）：聊天窗口多选操作栏中的“会话分支”按钮文案调整为“创造会话分支”，让当前动作语义更直接

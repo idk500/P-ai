@@ -127,10 +127,6 @@ fn get_project_repository_url(_state: State<'_, AppState>) -> String {
 
 #[tauri::command]
 fn load_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("在 {}:{} {} 获取对话状态锁失败：{err}", file!(), line!(), module_path!()))?;
     let mut result = state_read_config_cached(&state)?;
     normalize_app_config(&mut result);
     let workspace_changed = ensure_default_shell_workspace_in_config(&mut result, &state);
@@ -140,15 +136,10 @@ fn load_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
     let data = state_read_app_data_cached(&state)?;
     let mut runtime_data = data.clone();
     merge_private_organization_into_runtime_data(&state.data_path, &mut result, &mut runtime_data)?;
-    drop(guard);
     Ok(result)
 }
 
 fn read_app_bootstrap_snapshot(state: &AppState) -> Result<AppBootstrapSnapshot, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("在 {}:{} {} 获取对话状态锁失败：{err}", file!(), line!(), module_path!()))?;
     let mut config = state_read_config_cached(state)?;
     normalize_app_config(&mut config);
     let workspace_changed = ensure_default_shell_workspace_in_config(&mut config, state);
@@ -184,7 +175,6 @@ fn read_app_bootstrap_snapshot(state: &AppState) -> Result<AppBootstrapSnapshot,
         background_voice_screenshot_mode: data.background_voice_screenshot_mode.clone(),
         instruction_presets: data.instruction_presets.clone(),
     };
-    drop(guard);
     Ok(AppBootstrapSnapshot {
         config: runtime_config,
         agents: runtime_data.agents,
@@ -220,11 +210,6 @@ fn save_config(
     normalize_app_config(&mut config);
     let _ = ensure_default_shell_workspace_in_config(&mut config, &state);
     set_record_hotkey_probe_background_wake_enabled(config.record_background_wake_enabled);
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("在 {}:{} {} 获取对话状态锁失败：{err}", file!(), line!(), module_path!()))?;
 
     let mut data = state_read_app_data_cached(&state)?;
     let base_config = state_read_config_cached(&state)?;
@@ -271,7 +256,6 @@ fn save_config(
     }
     register_hotkey_from_config(&app, &config)?;
     let runtime_config = runtime_config_with_private_organization(&state, &config, &data)?;
-    drop(guard);
     let _ = app.emit("easy-call:config-updated", &runtime_config);
     Ok(runtime_config)
 }

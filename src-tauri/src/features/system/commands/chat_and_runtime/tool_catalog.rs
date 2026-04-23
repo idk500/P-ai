@@ -295,10 +295,6 @@ async fn list_department_permission_catalog(
             }),
     );
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
     let skills = load_workspace_skill_summaries_with_errors(&state)
         .map(|(skills, _errors)| {
             sorted_unique_catalog_items(skills.into_iter().filter_map(|item| {
@@ -321,8 +317,6 @@ async fn list_department_permission_catalog(
                     })
             }),
     );
-    drop(guard);
-
     Ok(DepartmentPermissionCatalog {
         builtin_tools,
         skills,

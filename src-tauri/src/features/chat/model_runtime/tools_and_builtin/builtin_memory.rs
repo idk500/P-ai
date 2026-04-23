@@ -92,18 +92,9 @@ fn upsert_memories(
     app_state: &AppState,
     drafts: &[MemorySaveDraft],
 ) -> Result<(Vec<MemorySaveUpsertItemResult>, usize), String> {
-    let owner_agent_id = {
-        let guard = app_state
-            .conversation_lock
-            .lock()
-            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-        let data = read_app_data(&app_state.data_path)?;
-        drop(guard);
-        data.agents
-            .iter()
-            .find(|a| a.id == data.assistant_department_agent_id && !a.is_built_in_user && a.private_memory_enabled)
-            .map(|a| a.id.clone())
-    };
+    let owner_agent_id = conversation_service()
+        .read_assistant_memory_context(app_state)?
+        .owner_agent_id;
     let inputs = drafts
         .iter()
         .map(|d| MemoryDraftInput {
@@ -204,27 +195,12 @@ fn builtin_recall(app_state: &AppState, query: &str) -> Result<Value, String> {
         return Err("recall.query is required".to_string());
     }
 
-    let memories = {
-        let guard = app_state
-            .conversation_lock
-            .lock()
-            .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-        let data = read_app_data(&app_state.data_path)?;
-        let assistant_department_agent_id = data.assistant_department_agent_id.clone();
-        let private_memory_enabled = data
-            .agents
-            .iter()
-            .find(|a| a.id == assistant_department_agent_id)
-            .map(|a| a.private_memory_enabled)
-            .unwrap_or(false);
-        let memories = memory_store_list_memories_visible_for_agent(
-            &app_state.data_path,
-            &assistant_department_agent_id,
-            private_memory_enabled,
-        )?;
-        drop(guard);
-        memories
-    };
+    let memory_context = conversation_service().read_assistant_memory_context(app_state)?;
+    let memories = memory_store_list_memories_visible_for_agent(
+        &app_state.data_path,
+        &memory_context.assistant_department_agent_id,
+        memory_context.private_memory_enabled,
+    )?;
 
     let recall_hit_ids = memory_recall_hit_ids(&app_state.data_path, &memories, trimmed_query);
     let latest_recall_ids = memory_board_ids_from_current_hits(&recall_hit_ids, 7);

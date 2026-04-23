@@ -476,12 +476,7 @@ async fn read_image_via_vision(
     };
     let hash = compute_image_hash_hex(&image)?;
     let cached = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
         let runtime = state_read_runtime_state_cached(state)?;
-        drop(guard);
         runtime
             .image_text_cache
             .iter()
@@ -498,10 +493,6 @@ async fn read_image_via_vision(
         if converted.is_empty() {
             return Err("Vision fallback returned empty text for the image.".to_string());
         }
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
         let mut runtime = state_read_runtime_state_cached(state)?;
         if let Some(entry) = runtime
             .image_text_cache
@@ -529,7 +520,6 @@ async fn read_image_via_vision(
             }
         }
         state_write_runtime_state_cached(state, &runtime)?;
-        drop(guard);
         converted
     };
 
@@ -847,6 +837,13 @@ fn test_read_file_state() -> AppState {
             app_data_persist_notify: Arc::new(tokio::sync::Notify::new()),
             app_data_persist_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             app_data_persist_latest_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            conversation_persist_pending: Arc::new(Mutex::new(None)),
+            conversation_persist_notify: Arc::new(tokio::sync::Notify::new()),
+            conversation_persist_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            conversation_persist_latest_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            cached_conversation_dirty_ids: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            cached_deleted_conversation_ids: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            cached_chat_index_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             app_data_persist_write_lock: Arc::new(Mutex::new(())),
             last_panic_snapshot: Arc::new(Mutex::new(None)),
             inflight_chat_abort_handles: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -871,6 +868,9 @@ fn test_read_file_state() -> AppState {
             )),
             provider_system_message_user_fallback_keys: Arc::new(Mutex::new(
                 std::collections::HashSet::new(),
+            )),
+            provider_request_gates: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
             )),
             remote_im_contact_runtime_states: Arc::new(Mutex::new(
                 std::collections::HashMap::new(),
@@ -963,6 +963,7 @@ fn builtin_read_file_should_return_root_image_payload_when_model_supports_image(
                 id: "vision-a".to_string(),
                 name: "vision-a".to_string(),
                 request_format: RequestFormat::OpenAI,
+                allow_concurrent_requests: false,
                 enable_text: true,
                 enable_image: true,
                 enable_audio: false,

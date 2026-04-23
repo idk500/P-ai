@@ -4,15 +4,7 @@ use super::*;
 pub(crate) async fn mcp_refresh_mcp_and_skills(
     state: State<'_, AppState>,
 ) -> Result<RefreshMcpAndSkillsResult, String> {
-    let mut out = {
-        let guard = state
-            .conversation_lock
-            .lock()
-            .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
-        let out = refresh_workspace_mcp_and_skills(&state)?;
-        drop(guard);
-        out
-    };
+    let mut out = refresh_workspace_mcp_and_skills(&state)?;
     match mcp_redeploy_all_from_policy(&state).await {
         Ok(deploy_errors) => {
             if !deploy_errors.is_empty() {
@@ -32,13 +24,8 @@ pub(crate) async fn mcp_refresh_mcp_and_skills(
 
 #[tauri::command]
 pub(crate) fn mcp_list_skills(state: State<'_, AppState>) -> Result<SkillListResult, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| named_lock_error("conversation_lock", file!(), line!(), module_path!(), &err))?;
     let (skills, errors) = load_workspace_skill_summaries_with_errors(&state)?;
     let _ = update_hidden_skill_snapshot_cache(&state, &skills, None);
-    drop(guard);
     Ok(SkillListResult { skills, errors })
 }
 

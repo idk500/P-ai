@@ -147,7 +147,7 @@
         </div>
       </div>
       <div v-if="!isOwnMessage(block) && block.reasoningStandard" class="flex flex-col opacity-90">
-        <details class="collapse border-l-2 border-base-content/20 pl-3 rounded-none min-w-55">
+        <details class="collapse border-l-2 border-base-content/20 pl-3 rounded-none min-w-55" @toggle="onReasoningStandardToggle">
           <summary class="collapse-title py-1 px-1 min-h-0 text-xs font-semibold flex items-center gap-1.5 text-base-content/80 hover:bg-base-200">
             <span class="inline-block shrink-0 text-[10px] leading-none text-success">▲</span>
             <span
@@ -156,13 +156,16 @@
               {{ reasoningSummaryLabel(block) }}
             </span>
           </summary>
-          <div class="collapse-content px-0 pb-1 pt-2 whitespace-pre-wrap text-xs leading-relaxed text-base-content/70">
+          <div
+            v-if="reasoningStandardExpanded"
+            class="collapse-content px-0 pb-1 pt-2 whitespace-pre-wrap text-xs leading-relaxed text-base-content/70"
+          >
             {{ block.reasoningStandard }}
           </div>
         </details>
       </div>
       <div v-if="!isOwnMessage(block) && resolvedInlineReasoning(block)" class="flex flex-col opacity-90">
-        <details class="collapse border-l-2 border-base-content/20 pl-3 rounded-none min-w-55">
+        <details class="collapse border-l-2 border-base-content/20 pl-3 rounded-none min-w-55" @toggle="onInlineReasoningToggle">
           <summary class="collapse-title py-1 px-1 min-h-0 text-xs font-semibold flex items-center gap-1.5 text-base-content/80 cursor-pointer hover:bg-base-200">
             <span class="inline-block shrink-0 text-[10px] leading-none text-success">▲</span>
             <span
@@ -171,13 +174,16 @@
               {{ reasoningSummaryLabel(block) }}
             </span>
           </summary>
-          <div class="collapse-content px-0 pb-1 pt-2 whitespace-pre-wrap text-xs leading-relaxed text-base-content/70">
+          <div
+            v-if="inlineReasoningExpanded"
+            class="collapse-content px-0 pb-1 pt-2 whitespace-pre-wrap text-xs leading-relaxed text-base-content/70"
+          >
             {{ resolvedInlineReasoning(block) }}
           </div>
         </details>
       </div>
       <div v-if="toolCallsForBlock(block).length > 0" class="flex flex-col opacity-90">
-        <details class="collapse border-l-2 border-base-content/20 pl-3 rounded-none min-w-55">
+        <details class="collapse border-l-2 border-base-content/20 pl-3 rounded-none min-w-55" @toggle="onToolCallsToggle">
           <summary class="collapse-title py-1 px-1 min-h-0 text-xs font-semibold flex items-center gap-1.5 text-base-content/80 hover:bg-base-200">
             <span class="inline-block h-2 w-2 rounded-full bg-success"></span>
             <span
@@ -185,7 +191,10 @@
             >{{ toolStatusLabel(block) }}</span>
             <span v-if="toolNamesLabel(block)" class="truncate">{{ ` · ${toolNamesLabel(block)}` }}</span>
           </summary>
-          <div class="collapse-content px-0 pb-1 pt-2 text-xs text-base-content/70">
+          <div
+            v-if="toolCallsExpanded"
+            class="collapse-content px-0 pb-1 pt-2 text-xs text-base-content/70"
+          >
             <ul class="timeline timeline-vertical timeline-compact">
               <li
                 v-for="(toolCall, idx) in toolCallsForBlock(block)"
@@ -563,12 +572,32 @@ const showRegenerateAction = false;
 const { t } = useI18n();
 const resolvedImageSrcMap = ref<Record<string, string>>({});
 const markdownContainerRef = ref<HTMLElement | null>(null);
+const reasoningStandardExpanded = ref(false);
+const inlineReasoningExpanded = ref(false);
+const toolCallsExpanded = ref(false);
 let disposed = false;
 
 const displayName = computed(() => messageName(props.block));
 const avatarUrl = computed(() => messageAvatarUrl(props.block));
 const formattedCreatedAt = computed(() => formattedBlockTime(props.block.createdAt));
 const streamingHeaderStatus = computed(() => assistantStreamingHeaderStatus(props.block));
+
+function detailsOpenFromEvent(event: Event): boolean {
+  const target = event.target;
+  return target instanceof HTMLDetailsElement ? target.open : false;
+}
+
+function onReasoningStandardToggle(event: Event): void {
+  reasoningStandardExpanded.value = detailsOpenFromEvent(event);
+}
+
+function onInlineReasoningToggle(event: Event): void {
+  inlineReasoningExpanded.value = detailsOpenFromEvent(event);
+}
+
+function onToolCallsToggle(event: Event): void {
+  toolCallsExpanded.value = detailsOpenFromEvent(event);
+}
 
 function avatarInitial(name: string): string {
   const text = (name || "").trim();
@@ -1037,19 +1066,19 @@ function openResolvedImagePreview(
   --tw-prose-body: currentColor;
   --tw-prose-headings: currentColor;
   --tw-prose-lead: currentColor;
-  --tw-prose-links: hsl(var(--bc));
+  --tw-prose-links: var(--color-base-content);
   --tw-prose-bold: currentColor;
   --tw-prose-counters: currentColor;
-  --tw-prose-bullets: hsl(var(--bc) / 0.5);
-  --tw-prose-hr: hsl(var(--bc) / 0.15);
+  --tw-prose-bullets: color-mix(in srgb, var(--color-base-content) 50%, transparent);
+  --tw-prose-hr: color-mix(in srgb, var(--color-base-content) 15%, transparent);
   --tw-prose-quotes: currentColor;
-  --tw-prose-quote-borders: hsl(var(--bc) / 0.2);
-  --tw-prose-captions: hsl(var(--bc) / 0.75);
+  --tw-prose-quote-borders: color-mix(in srgb, var(--color-base-content) 20%, transparent);
+  --tw-prose-captions: color-mix(in srgb, var(--color-base-content) 75%, transparent);
   --tw-prose-code: currentColor;
   --tw-prose-pre-code: currentColor;
-  --tw-prose-pre-bg: hsl(var(--b2));
-  --tw-prose-th-borders: hsl(var(--bc) / 0.2);
-  --tw-prose-td-borders: hsl(var(--bc) / 0.15);
+  --tw-prose-pre-bg: var(--color-base-200);
+  --tw-prose-th-borders: color-mix(in srgb, var(--color-base-content) 20%, transparent);
+  --tw-prose-td-borders: color-mix(in srgb, var(--color-base-content) 15%, transparent);
 }
 
 .assistant-markdown :deep(.ecall-markdown-content) {
@@ -1194,11 +1223,11 @@ function openResolvedImagePreview(
 .assistant-markdown :deep(.ecall-markdown-content :where(a,.link-node)) {
   text-decoration: underline;
   text-underline-offset: 0.18em;
-  text-decoration-color: hsl(var(--bc) / 0.28);
+  text-decoration-color: color-mix(in srgb, var(--color-base-content) 28%, transparent);
 }
 
 .assistant-markdown :deep(.ecall-markdown-content :where(a,.link-node):hover) {
-  text-decoration-color: hsl(var(--bc) / 0.5);
+  text-decoration-color: color-mix(in srgb, var(--color-base-content) 50%, transparent);
 }
 
 .assistant-markdown :deep(.ecall-markdown-content :where(strong,.strong-node)) {
@@ -1206,9 +1235,9 @@ function openResolvedImagePreview(
 }
 
 .assistant-markdown :deep(.ecall-markdown-content :where(blockquote,.blockquote)) {
-  border-left: 3px solid hsl(var(--bc) / 0.16);
+  border-left: 3px solid color-mix(in srgb, var(--color-base-content) 16%, transparent);
   padding-left: 0.68rem;
-  color: hsl(var(--bc) / 0.82);
+  color: color-mix(in srgb, var(--color-base-content) 82%, transparent);
 }
 
 .assistant-markdown :deep(.ecall-markdown-content :where(blockquote,.blockquote) .markdown-renderer),
@@ -1219,13 +1248,13 @@ function openResolvedImagePreview(
 
 .assistant-markdown :deep(.ecall-markdown-content :where(hr,.hr-node)) {
   border: 0;
-  border-top: 1px solid hsl(var(--bc) / 0.14);
+  border-top: 1px solid color-mix(in srgb, var(--color-base-content) 14%, transparent);
   margin: 0.65rem 0;
 }
 
 .assistant-markdown :deep(.ecall-markdown-content :where(:not(pre) > code,.inline-code)) {
-  border: 1px solid hsl(var(--bc) / 0.12);
-  background: hsl(var(--b2));
+  border: 1px solid color-mix(in srgb, var(--color-base-content) 12%, transparent);
+  background: var(--color-base-200);
   border-radius: 0.4rem;
   padding: 0.08rem 0.3rem;
   font-family: var(
@@ -1252,14 +1281,14 @@ function openResolvedImagePreview(
 }
 
 .assistant-markdown :deep(.ecall-markdown-content :where(th,.table-node th)) {
-  border-bottom: 1px solid hsl(var(--bc) / 0.16);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-base-content) 16%, transparent);
   padding: 0.36rem 0.5rem;
   text-align: left;
   font-weight: 600;
 }
 
 .assistant-markdown :deep(.ecall-markdown-content :where(td,.table-node td)) {
-  border-bottom: 1px solid hsl(var(--bc) / 0.1);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-base-content) 10%, transparent);
   padding: 0.34rem 0.5rem;
 }
 

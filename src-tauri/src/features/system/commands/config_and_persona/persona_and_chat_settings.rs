@@ -1,15 +1,9 @@
 #[tauri::command]
 fn load_agents(state: State<'_, AppState>) -> Result<Vec<AgentProfile>, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
     let mut config = state_read_config_cached(&state)?;
     let data = state_read_agents_runtime_snapshot(&state)?;
     let mut runtime_data = data.clone();
     merge_private_organization_into_runtime_data(&state.data_path, &mut config, &mut runtime_data)?;
-    drop(guard);
     Ok(runtime_data.agents)
 }
 
@@ -21,11 +15,6 @@ fn save_agents(
     if input.agents.is_empty() {
         return Err("At least one agent is required.".to_string());
     }
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
 
     let base_config = read_config(&state.config_path)?;
     let runtime = state_read_runtime_state_cached(&state)?;
@@ -230,7 +219,6 @@ fn save_agents(
         }
     }
     let runtime_agents = runtime_agents_with_private_organization(&state, &config, &data)?;
-    drop(guard);
     Ok(runtime_agents)
 }
 
@@ -337,16 +325,11 @@ fn set_agent_private_memory_enabled(
         return Err("agentId is required".to_string());
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let mut agents = state_read_agents_cached(&state)?;
     let base_config = read_config(&state.config_path)?;
     let (private_agent_ids, _) =
         runtime_private_organization_ids(&state.data_path, &base_config, &agents)?;
     if private_agent_ids.contains(agent_id) {
-        drop(guard);
         return Err(private_agent_operation_error(agent_id));
     }
 
@@ -357,7 +340,6 @@ fn set_agent_private_memory_enabled(
 
     let current = agents[agent_idx].private_memory_enabled;
     if current == input.enabled {
-        drop(guard);
         return Ok(SetAgentPrivateMemoryEnabledResult {
             agent_id: agent_id.to_string(),
             enabled: current,
@@ -370,7 +352,6 @@ fn set_agent_private_memory_enabled(
     if input.enabled {
         agents[agent_idx].private_memory_enabled = true;
         state_write_agents_cached(&state, &agents)?;
-        drop(guard);
         return Ok(SetAgentPrivateMemoryEnabledResult {
             agent_id: agent_id.to_string(),
             enabled: true,
@@ -384,7 +365,6 @@ fn set_agent_private_memory_enabled(
     let deleted = memory_store_delete_memories_by_owner_agent_id(&state.data_path, agent_id)?;
     agents[agent_idx].private_memory_enabled = false;
     state_write_agents_cached(&state, &agents)?;
-    drop(guard);
 
     Ok(SetAgentPrivateMemoryEnabledResult {
         agent_id: agent_id.to_string(),
@@ -428,16 +408,11 @@ fn disable_agent_private_memory(
         return Err("agentId is required".to_string());
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let mut agents = state_read_agents_cached(&state)?;
     let base_config = read_config(&state.config_path)?;
     let (private_agent_ids, _) =
         runtime_private_organization_ids(&state.data_path, &base_config, &agents)?;
     if private_agent_ids.contains(agent_id) {
-        drop(guard);
         return Err(private_agent_operation_error(agent_id));
     }
 
@@ -447,7 +422,6 @@ fn disable_agent_private_memory(
         .ok_or_else(|| format!("Agent '{}' not found.", agent_id))?;
 
     if !agents[agent_idx].private_memory_enabled {
-        drop(guard);
         return Ok(DisableAgentPrivateMemoryResult {
             agent_id: agent_id.to_string(),
             enabled: false,
@@ -458,7 +432,6 @@ fn disable_agent_private_memory(
     let deleted = memory_store_delete_memories_by_owner_agent_id(&state.data_path, agent_id)?;
     agents[agent_idx].private_memory_enabled = false;
     state_write_agents_cached(&state, &agents)?;
-    drop(guard);
 
     Ok(DisableAgentPrivateMemoryResult {
         agent_id: agent_id.to_string(),
@@ -477,16 +450,11 @@ fn import_agent_memories(
         return Err("agentId is required".to_string());
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let data = state_read_app_data_cached(&state)?;
     let base_config = read_config(&state.config_path)?;
     let (private_agent_ids, _) =
         runtime_private_organization_ids(&state.data_path, &base_config, &data.agents)?;
     if private_agent_ids.contains(agent_id) {
-        drop(guard);
         return Err(private_agent_operation_error(agent_id));
     }
     if !data
@@ -494,10 +462,8 @@ fn import_agent_memories(
         .iter()
         .any(|a| a.id == agent_id && !a.is_built_in_user)
     {
-        drop(guard);
         return Err(format!("Agent '{}' not found.", agent_id));
     }
-    drop(guard);
 
     let stats = memory_store_import_memories_for_agent(&state.data_path, &input.memories, agent_id)?;
     Ok(ImportAgentMemoriesResult {
@@ -510,11 +476,6 @@ fn import_agent_memories(
 
 #[tauri::command]
 fn load_chat_settings(state: State<'_, AppState>) -> Result<ChatSettings, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
     let mut config = read_config(&state.config_path)?;
     let mut data = state_read_agents_runtime_snapshot(&state)?;
     let assistant_agent_id = assistant_department_agent_id(&config).unwrap_or_else(default_assistant_department_agent_id);
@@ -529,7 +490,6 @@ fn load_chat_settings(state: State<'_, AppState>) -> Result<ChatSettings, String
     }
     let mut runtime_data = data.clone();
     merge_private_organization_into_runtime_data(&state.data_path, &mut config, &mut runtime_data)?;
-    drop(guard);
 
     Ok(ChatSettings {
         assistant_department_agent_id: data.assistant_department_agent_id.clone(),
@@ -704,16 +664,10 @@ fn patch_chat_settings(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ChatSettings, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
     let mut data = state_read_agents_runtime_snapshot(&state)?;
     let config = read_config(&state.config_path)?;
     let mut runtime = build_runtime_state_file(&data);
     let payload = apply_chat_settings_patch(&state, &mut data.agents, &mut runtime, &config, input)?;
-    drop(guard);
 
     let _ = app.emit("easy-call:chat-settings-updated", &payload);
 
@@ -809,16 +763,11 @@ fn save_agent_avatar(
         return Err("avatar mime must be image/*".to_string());
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let mut agents = state_read_agents_cached(&state)?;
     let base_config = read_config(&state.config_path)?;
     let (private_agent_ids, _) =
         runtime_private_organization_ids(&state.data_path, &base_config, &agents)?;
     if private_agent_ids.contains(input.agent_id.trim()) {
-        drop(guard);
         return Err(private_agent_operation_error(input.agent_id.trim()));
     }
 
@@ -843,7 +792,6 @@ fn save_agent_avatar(
     agents[idx].avatar_updated_at = Some(now.clone());
     agents[idx].updated_at = now.clone();
     state_write_agents_cached(&state, &agents)?;
-    drop(guard);
 
     Ok(AvatarMeta {
         path: path.to_string_lossy().to_string(),
@@ -860,16 +808,11 @@ fn clear_agent_avatar(
         return Err("agentId is required".to_string());
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let mut agents = state_read_agents_cached(&state)?;
     let base_config = read_config(&state.config_path)?;
     let (private_agent_ids, _) =
         runtime_private_organization_ids(&state.data_path, &base_config, &agents)?;
     if private_agent_ids.contains(input.agent_id.trim()) {
-        drop(guard);
         return Err(private_agent_operation_error(input.agent_id.trim()));
     }
     let idx = agents
@@ -887,7 +830,6 @@ fn clear_agent_avatar(
     agents[idx].avatar_updated_at = None;
     agents[idx].updated_at = now_iso();
     state_write_agents_cached(&state, &agents)?;
-    drop(guard);
     Ok(())
 }
 
@@ -980,10 +922,6 @@ fn sync_tray_icon(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
     let data = state_read_app_data_cached(&state)?;
     let target_agent_id = input
         .agent_id
@@ -996,7 +934,6 @@ fn sync_tray_icon(
         .iter()
         .find(|a| a.id == target_agent_id)
         .and_then(|a| a.avatar_path.clone());
-    drop(guard);
     sync_tray_icon_from_avatar_path(&app, avatar_path.as_deref())
 }
 
@@ -1075,11 +1012,6 @@ fn patch_conversation_api_settings(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ConversationApiSettings, String> {
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
-
     let mut config = state_read_config_cached(&state)?;
     apply_conversation_api_settings_patch(&mut config, input);
     normalize_app_config(&mut config);
@@ -1099,7 +1031,6 @@ fn patch_conversation_api_settings(
         dept.updated_at = now_iso();
     }
     state_write_config_cached(&state, &config)?;
-    drop(guard);
 
     let payload = build_conversation_api_settings_payload(&config);
 
@@ -1122,11 +1053,6 @@ fn set_department_primary_api_config(
     if api_config_id.is_empty() {
         return Err("API config ID is required.".to_string());
     }
-
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| format!("Failed to lock state mutex at {}:{} {}: {err}", file!(), line!(), module_path!()))?;
 
     let mut config = state_read_config_cached(&state)?;
     let selected_api = config
@@ -1187,7 +1113,6 @@ fn set_department_primary_api_config(
     state_write_config_cached(&state, &config)?;
     let data = state_read_app_data_cached(&state)?;
     let runtime_config = runtime_config_with_private_organization(&state, &config, &data)?;
-    drop(guard);
 
     let _ = app.emit("easy-call:config-updated", &runtime_config);
 

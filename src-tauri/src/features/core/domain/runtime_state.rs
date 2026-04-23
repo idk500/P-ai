@@ -27,6 +27,13 @@ struct AppState {
     app_data_persist_notify: Arc<tokio::sync::Notify>,
     app_data_persist_started: Arc<std::sync::atomic::AtomicBool>,
     app_data_persist_latest_seq: Arc<std::sync::atomic::AtomicU64>,
+    conversation_persist_pending: Arc<Mutex<Option<PendingConversationPersist>>>,
+    conversation_persist_notify: Arc<tokio::sync::Notify>,
+    conversation_persist_started: Arc<std::sync::atomic::AtomicBool>,
+    conversation_persist_latest_seq: Arc<std::sync::atomic::AtomicU64>,
+    cached_conversation_dirty_ids: Arc<Mutex<std::collections::HashSet<String>>>,
+    cached_deleted_conversation_ids: Arc<Mutex<std::collections::HashSet<String>>>,
+    cached_chat_index_dirty: Arc<std::sync::atomic::AtomicBool>,
     app_data_persist_write_lock: Arc<Mutex<()>>,
     last_panic_snapshot: Arc<Mutex<Option<String>>>,
     inflight_chat_abort_handles: Arc<Mutex<std::collections::HashMap<String, AbortHandle>>>,
@@ -63,6 +70,8 @@ struct AppState {
     provider_streaming_disabled_keys: Arc<Mutex<std::collections::HashMap<String, i64>>>,
     provider_system_message_user_fallback_keys:
         Arc<Mutex<std::collections::HashSet<String>>>,
+    provider_request_gates:
+        Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     remote_im_contact_runtime_states:
         Arc<Mutex<std::collections::HashMap<String, RemoteImContactRuntimeState>>>,
     hidden_skill_snapshot_cache: Arc<Mutex<String>>,
@@ -249,6 +258,13 @@ impl AppState {
             app_data_persist_notify: Arc::new(tokio::sync::Notify::new()),
             app_data_persist_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             app_data_persist_latest_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            conversation_persist_pending: Arc::new(Mutex::new(None)),
+            conversation_persist_notify: Arc::new(tokio::sync::Notify::new()),
+            conversation_persist_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            conversation_persist_latest_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            cached_conversation_dirty_ids: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            cached_deleted_conversation_ids: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            cached_chat_index_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             app_data_persist_write_lock: Arc::new(Mutex::new(())),
             last_panic_snapshot: Arc::new(Mutex::new(None)),
             inflight_chat_abort_handles: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -272,6 +288,9 @@ impl AppState {
             provider_streaming_disabled_keys: Arc::new(Mutex::new(std::collections::HashMap::new())),
             provider_system_message_user_fallback_keys: Arc::new(Mutex::new(
                 std::collections::HashSet::new(),
+            )),
+            provider_request_gates: Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
             )),
             remote_im_contact_runtime_states: Arc::new(Mutex::new(
                 std::collections::HashMap::new(),

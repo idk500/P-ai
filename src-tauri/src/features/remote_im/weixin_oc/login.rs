@@ -204,10 +204,6 @@ impl WeixinOcManager {
                 });
             }
             let updated_channel = {
-                let guard = state
-                    .conversation_lock
-                    .lock()
-                    .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
                 let mut writable = state_read_config_cached(state)?;
                 let writable_channel = writable
                     .remote_im_channels
@@ -223,7 +219,6 @@ impl WeixinOcManager {
                     .map_err(|err| format!("序列化个人微信凭证失败: {err}"))?;
                 let updated_channel = writable_channel.clone();
                 state_write_config_cached(state, &writable)?;
-                drop(guard);
                 updated_channel
             };
             self.login_sessions.write().await.remove(&input.channel_id);
@@ -326,10 +321,6 @@ impl WeixinOcManager {
         self.stop_channel(channel_id).await;
         self.login_sessions.write().await.remove(channel_id);
         {
-            let guard = state
-                .conversation_lock
-                .lock()
-                .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
             let mut writable = state_read_config_cached(state)?;
             let channel = writable
                 .remote_im_channels
@@ -344,7 +335,6 @@ impl WeixinOcManager {
             channel.credentials = serde_json::to_value(&creds)
                 .map_err(|err| format!("序列化个人微信凭证失败: {err}"))?;
             state_write_config_cached(state, &writable)?;
-            drop(guard);
         }
         self.set_state(channel_id, |runtime| {
             *runtime = WeixinOcRuntimeState::default();

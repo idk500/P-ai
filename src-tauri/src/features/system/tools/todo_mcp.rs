@@ -217,16 +217,11 @@ fn conversation_todo_replace(
         return Ok(stored);
     }
 
-    let guard = state
-        .conversation_lock
-        .lock()
-        .map_err(|err| state_lock_error_with_panic(file!(), line!(), module_path!(), &err))?;
-    let mut conversation = state_read_conversation_cached(state, conversation_id.trim())
+    let mut conversation = conversation_service().read_persisted_conversation(state, conversation_id.trim())
         .map_err(|_| format!("未找到会话，conversation_id={conversation_id}"))?;
     conversation.current_todos = stored.clone();
     conversation.updated_at = now_iso();
-    state_write_conversation_with_chat_index_cached(state, &conversation)?;
-    drop(guard);
+    conversation_service().persist_conversation_with_chat_index(state, &conversation)?;
     Ok(stored)
 }
 
